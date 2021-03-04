@@ -19,6 +19,7 @@
 #include <string>
 
 #include "codegen/llvm/codegen_llvm_helper_visitor.hpp"
+#include "codegen/codegen_c_visitor.hpp"
 #include "symtab/symbol_table.hpp"
 #include "utils/logger.hpp"
 #include "visitors/ast_visitor.hpp"
@@ -49,12 +50,15 @@ namespace codegen {
  * \class CodegenLLVMVisitor
  * \brief %Visitor for transforming NMODL AST to LLVM IR
  */
-class CodegenLLVMVisitor: public visitor::ConstAstVisitor {
+class CodegenLLVMVisitor: public CodegenCVisitor {
     // Name of mod file (without .mod suffix)
     std::string mod_filename;
 
     // Output directory for code generation
     std::string output_dir;
+
+    /// flag to indicate if visitor should print the the wrapper code
+    bool wrapper_codegen = false;
 
   private:
 
@@ -104,9 +108,17 @@ class CodegenLLVMVisitor: public visitor::ConstAstVisitor {
     CodegenLLVMVisitor(const std::string& mod_filename,
                        const std::string& output_dir,
                        bool opt_passes,
+                       int vector_width = 1,
                        bool use_single_precision = false,
                        int vector_width = 1)
-        : mod_filename(mod_filename)
+        : CodegenCVisitor(mod_filename,
+                          output_dir,
+                          codegen::LayoutType::soa,
+                          use_single_precision ? "float" : "double",
+                          false,
+                          ".ll",
+                          ".cpp")
+        , mod_filename(mod_filename)
         , output_dir(output_dir)
         , opt_passes(opt_passes)
         , use_single_precision(use_single_precision)
@@ -295,6 +307,11 @@ class CodegenLLVMVisitor: public visitor::ConstAstVisitor {
         os.flush();
         return str;
     }
+
+    // Prints the cpp wrapper routines
+    void print_wrapper_routines() override;
+    void print_wrapper_headers_include();
+
 };
 
 /** \} */  // end of llvm_backends

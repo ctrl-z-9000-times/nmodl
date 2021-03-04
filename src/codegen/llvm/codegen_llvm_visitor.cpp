@@ -767,8 +767,23 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
         run_llvm_opt_passes();
     }
 
+    print_wrapper_routines();
     // Keep this for easier development (maybe move to debug mode later).
+    // print_module() should be changed to print the actual LLVM IR file
+    // somewhere, so that it can be then compiled with nrnivmodl-core?
     std::cout << print_module();
+}
+
+void CodegenLLVMVisitor::print_wrapper_headers_include() {
+    print_standard_includes();
+    print_coreneuron_includes();
+}
+
+void CodegenLLVMVisitor::print_wrapper_routines() {
+    printer = wrapper_printer;
+    wrapper_codegen = true;
+    print_backend_info();
+    print_wrapper_headers_include();
 }
 
 void CodegenLLVMVisitor::visit_procedure_block(const ast::ProcedureBlock& node) {
