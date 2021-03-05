@@ -783,6 +783,36 @@ void CodegenLLVMVisitor::print_wrapper_headers_include() {
 void CodegenLLVMVisitor::print_instance_struct() {
     printer->add_newline(2);
     printer->add_line("/** Instance Struct passed as argument to LLVM IR kernels */");
+    std::string struct_declaration;
+    struct_declaration += "struct ";
+    struct_declaration += instance_struct_type_name;
+    printer->start_block(struct_declaration);
+    for (const auto& variable: instance_var_helper.instance->get_codegen_vars()) {
+        auto is_pointer = variable->get_is_pointer();
+        auto nmodl_type = variable->get_type()->get_type();
+        auto pointer = is_pointer ? "*" : "";
+        printer->add_indent();
+        std::string variable_declaration;
+        switch (nmodl_type) {
+#define DISPATCH(type, c_ptr_type, c_type)                       \
+    case type:                                                         \
+        variable_declaration += is_pointer ? (c_ptr_type) : (c_type); \
+        break;
+
+            DISPATCH(ast::AstNodeType::DOUBLE, "double*", "double");
+            DISPATCH(ast::AstNodeType::INTEGER, "int*", "int");
+
+#undef DISPATCH
+        default:
+            throw std::runtime_error("Error: unsupported type found in instance struct");
+        }
+
+        variable_declaration += " ";
+        variable_declaration += variable->get_node_name();
+        variable_declaration += ";";
+        printer->add_line(variable_declaration);
+    }
+    printer->end_block();
 }
 
 void CodegenLLVMVisitor::print_wrapper_routines() {
