@@ -108,7 +108,6 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     CodegenLLVMVisitor(const std::string& mod_filename,
                        const std::string& output_dir,
                        bool opt_passes,
-                       int vector_width = 1,
                        bool use_single_precision = false,
                        int vector_width = 1)
         : CodegenCVisitor(mod_filename,
@@ -311,6 +310,7 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     // Prints the cpp wrapper routines
     void print_wrapper_routines() override;
     void print_wrapper_headers_include();
+    void print_instance_struct();
 
 };
 

@@ -767,6 +767,8 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
         run_llvm_opt_passes();
     }
 
+    // Setup CodegenHelper for C++ wrapper file
+    setup(node);
     print_wrapper_routines();
     // Keep this for easier development (maybe move to debug mode later).
     // print_module() should be changed to print the actual LLVM IR file
@@ -779,11 +781,23 @@ void CodegenLLVMVisitor::print_wrapper_headers_include() {
     print_coreneuron_includes();
 }
 
+void CodegenLLVMVisitor::print_instance_struct() {
+    printer->add_newline(2);
+    printer->add_line("/** Instance Struct passed as argument to LLVM IR kernels */");
+}
+
 void CodegenLLVMVisitor::print_wrapper_routines() {
     printer = wrapper_printer;
     wrapper_codegen = true;
     print_backend_info();
     print_wrapper_headers_include();
+    print_instance_struct();
+    // print_instance_variable_setup();
+    // print_nrn_init_wrapper();
+    // print_function_wrappers();
+    // print_procedure_wrappers();
+    // print_nrn_state_wrapper();
+    // print_nrn_cur_wrapper();
 }
 
 void CodegenLLVMVisitor::visit_procedure_block(const ast::ProcedureBlock& node) {
