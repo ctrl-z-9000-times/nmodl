@@ -771,9 +771,8 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
     setup(node);
     print_wrapper_routines();
     // Keep this for easier development (maybe move to debug mode later).
-    // print_module() should be changed to print the actual LLVM IR file
-    // somewhere, so that it can be then compiled with nrnivmodl-core?
     std::cout << print_module();
+    print_target_file();
 }
 
 void CodegenLLVMVisitor::print_wrapper_headers_include() {

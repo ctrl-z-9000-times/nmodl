@@ -360,13 +360,16 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
         visitor::ConstAstVisitor::visit_for_netcon(node);
     }
 
-    // \todo: move this to debug mode (e.g. -v option or --dump-ir)
     std::string print_module() const {
         std::string str;
         llvm::raw_string_ostream os(str);
         os << *module;
         os.flush();
         return str;
+    }
+
+    void print_target_file() const {
+        target_printer->add_multi_line(print_module());
     }
 
     // Prints the cpp wrapper routines
