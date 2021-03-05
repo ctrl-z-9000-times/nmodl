@@ -790,10 +790,10 @@ void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
         auto pointer = is_pointer ? "*" : "";
         printer->add_indent();
         switch (nmodl_type) {
-#define DISPATCH(type, c_type)                       \
-    case type:                                                         \
-        printer->add_line( \
-                "{}{} {}{};"_format(c_type, pointer, is_pointer ? ptr_type_qualifier() : "", variable->get_node_name())); \
+#define DISPATCH(type, c_type)                                                                    \
+    case type:                                                                                    \
+        printer->add_line("{}{} {}{};"_format(                                                    \
+            c_type, pointer, is_pointer ? ptr_type_qualifier() : "", variable->get_node_name())); \
         break;
 
             DISPATCH(ast::AstNodeType::DOUBLE, "double");
@@ -803,16 +803,13 @@ void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
         default:
             throw std::runtime_error("Error: unsupported type found in instance struct");
         }
-
     }
     printer->end_block();
 }
 
-void CodegenLLVMVisitor::print_instance_variable_setup() {
-}
+void CodegenLLVMVisitor::print_instance_variable_setup() {}
 
-void CodegenLLVMVisitor::print_backend_compute_routine_decl() {
-}
+void CodegenLLVMVisitor::print_backend_compute_routine_decl() {}
 
 // Currently copied from CodegenIspcVisitor
 void CodegenLLVMVisitor::print_net_receive_buffering_wrapper() {
@@ -904,12 +901,14 @@ void CodegenLLVMVisitor::print_wrapper_routines() {
     // extern "C" void nrn_state_hh(hh_Instance* inst, NrnThread* nt, Memb_list* ml, int type);
     // codegen code:
     // for (const auto& function: wrapper_functions) {
-    //     if (!program_symtab->lookup(function->get_node_name())->has_all_status(Status::inlined)) {
+    //     if (!program_symtab->lookup(function->get_node_name())->has_all_status(Status::inlined))
+    //     {
     //         fallback_codegen.print_function(*function);
     //     }
     // }
     // for (const auto& procedure: wrapper_procedures) {
-    //     if (!program_symtab->lookup(procedure->get_node_name())->has_all_status(Status::inlined)) {
+    //     if (!program_symtab->lookup(procedure->get_node_name())->has_all_status(Status::inlined))
+    //     {
     //         fallback_codegen.print_procedure(*procedure);
     //     }
     // }

@@ -381,9 +381,7 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     void print_backend_compute_routine_decl();
     void print_net_receive_buffering_wrapper();
     void print_block_wrappers_initial_equation_state();
-    void print_wrapper_routine(const std::string& wrapper_function,
-                                               BlockType type);
-
+    void print_wrapper_routine(const std::string& wrapper_function, BlockType type);
 };
 
 /** \} */  // end of llvm_backends
