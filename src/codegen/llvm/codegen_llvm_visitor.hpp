@@ -298,6 +298,27 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     void visit_var_name(const ast::VarName& node) override;
     void visit_while_statement(const ast::WhileStatement& node) override;
 
+    void visit_binary_operator(const ast::BinaryOperator& node) {visitor::ConstAstVisitor::visit_binary_operator(node);};
+    void visit_else_if_statement(const ast::ElseIfStatement& node) {visitor::ConstAstVisitor::visit_else_if_statement(node);};
+    void visit_else_statement(const ast::ElseStatement& node) {visitor::ConstAstVisitor::visit_else_statement(node);};
+    void visit_float(const ast::Float& node) {visitor::ConstAstVisitor::visit_float(node);};
+    void visit_from_statement(const ast::FromStatement& node) {visitor::ConstAstVisitor::visit_from_statement(node);};
+    void visit_eigen_newton_solver_block(const ast::EigenNewtonSolverBlock& node) {visitor::ConstAstVisitor::visit_eigen_newton_solver_block(node);};
+    void visit_eigen_linear_solver_block(const ast::EigenLinearSolverBlock& node) {visitor::ConstAstVisitor::visit_eigen_linear_solver_block(node);};
+    void visit_indexed_name(const ast::IndexedName& node) {visitor::ConstAstVisitor::visit_indexed_name(node);};
+    void visit_local_list_statement(const ast::LocalListStatement& node) {visitor::ConstAstVisitor::visit_local_list_statement(node);};
+    void visit_name(const ast::Name& node) {visitor::ConstAstVisitor::visit_name(node);};
+    void visit_paren_expression(const ast::ParenExpression& node) {visitor::ConstAstVisitor::visit_paren_expression(node);};
+    void visit_prime_name(const ast::PrimeName& node) {visitor::ConstAstVisitor::visit_prime_name(node);};
+    void visit_string(const ast::String& node) {visitor::ConstAstVisitor::visit_string(node);};
+    void visit_solution_expression(const ast::SolutionExpression& node) {visitor::ConstAstVisitor::visit_solution_expression(node);};
+    void visit_unary_operator(const ast::UnaryOperator& node) {visitor::ConstAstVisitor::visit_unary_operator(node);};
+    void visit_unit(const ast::Unit& node) {visitor::ConstAstVisitor::visit_unit(node);};
+    void visit_verbatim(const ast::Verbatim& node) {visitor::ConstAstVisitor::visit_verbatim(node);};
+    void visit_watch_statement(const ast::WatchStatement& node) {visitor::ConstAstVisitor::visit_watch_statement(node);};
+    void visit_derivimplicit_callback(const ast::DerivimplicitCallback& node) {visitor::ConstAstVisitor::visit_derivimplicit_callback(node);};
+    void visit_for_netcon(const ast::ForNetcon& node) {visitor::ConstAstVisitor::visit_for_netcon(node);};
+
     // \todo: move this to debug mode (e.g. -v option or --dump-ir)
     std::string print_module() const {
         std::string str;
