@@ -780,39 +780,100 @@ void CodegenLLVMVisitor::print_wrapper_headers_include() {
     print_coreneuron_includes();
 }
 
-void CodegenLLVMVisitor::print_instance_struct() {
+void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
     printer->add_newline(2);
     printer->add_line("/** Instance Struct passed as argument to LLVM IR kernels */");
-    std::string struct_declaration;
-    struct_declaration += "struct ";
-    struct_declaration += instance_struct_type_name;
-    printer->start_block(struct_declaration);
+    printer->start_block("struct {} "_format(instance_struct_type_name));
     for (const auto& variable: instance_var_helper.instance->get_codegen_vars()) {
         auto is_pointer = variable->get_is_pointer();
         auto nmodl_type = variable->get_type()->get_type();
         auto pointer = is_pointer ? "*" : "";
         printer->add_indent();
-        std::string variable_declaration;
         switch (nmodl_type) {
-#define DISPATCH(type, c_ptr_type, c_type)                       \
+#define DISPATCH(type, c_type)                       \
     case type:                                                         \
-        variable_declaration += is_pointer ? (c_ptr_type) : (c_type); \
+        printer->add_line( \
+                "{}{} {}{};"_format(c_type, pointer, is_pointer ? ptr_type_qualifier() : "", variable->get_node_name())); \
         break;
 
-            DISPATCH(ast::AstNodeType::DOUBLE, "double*", "double");
-            DISPATCH(ast::AstNodeType::INTEGER, "int*", "int");
+            DISPATCH(ast::AstNodeType::DOUBLE, "double");
+            DISPATCH(ast::AstNodeType::INTEGER, "int");
 
 #undef DISPATCH
         default:
             throw std::runtime_error("Error: unsupported type found in instance struct");
         }
 
-        variable_declaration += " ";
-        variable_declaration += variable->get_node_name();
-        variable_declaration += ";";
-        printer->add_line(variable_declaration);
     }
     printer->end_block();
+}
+
+void CodegenLLVMVisitor::print_instance_variable_setup() {
+}
+
+void CodegenLLVMVisitor::print_backend_compute_routine_decl() {
+}
+
+// Currently copied from CodegenIspcVisitor
+void CodegenLLVMVisitor::print_net_receive_buffering_wrapper() {
+    if (!info.net_receive_required() || info.artificial_cell) {
+        return;
+    }
+    printer->add_newline(2);
+    printer->start_block("void {}(NrnThread* nt)"_format(method_name("net_buf_receive")));
+    printer->add_line("Memb_list* ml = get_memb_list(nt);");
+    printer->start_block("if (ml == NULL)");
+    printer->add_line("return;");
+    printer->end_block(1);
+    printer->add_line(
+        "{0}* {1}inst = ({0}*) ml->instance;"_format(instance_struct(), ptr_type_qualifier()));
+
+    printer->add_line("{}(inst, nt, ml);"_format(method_name("ispc_net_buf_receive")));
+
+    printer->end_block(1);
+}
+
+// Copied from CodegenIspcVisitor
+void CodegenLLVMVisitor::print_wrapper_routine(const std::string& wrapper_function,
+                                               BlockType type) {
+    static const auto args = "NrnThread* nt, Memb_list* ml, int type";
+    const auto function_name = method_name(wrapper_function);
+    auto compute_function = compute_method_name(type);
+
+    printer->add_newline(2);
+    printer->start_block("void {}({})"_format(function_name, args));
+    printer->add_line("int nodecount = ml->nodecount;");
+    // clang-format off
+    printer->add_line("{0}* {1}inst = ({0}*) ml->instance;"_format(instance_struct(), ptr_type_qualifier()));
+    // clang-format on
+
+    if (type == BlockType::Initial) {
+        printer->add_newline();
+        printer->add_line("setup_instance(nt, ml);");
+        printer->add_line("ispc_celsius = celsius;");
+        printer->add_newline();
+        printer->start_block("if (_nrn_skip_initmodel)");
+        printer->add_line("return;");
+        printer->end_block();
+        printer->add_newline();
+    }
+
+    printer->add_line("{}(inst, nt, ml, type);"_format(compute_function));
+    printer->end_block();
+    printer->add_newline();
+}
+
+// Copied from CodegenIspcVisitor
+void CodegenLLVMVisitor::print_block_wrappers_initial_equation_state() {
+    print_wrapper_routine(naming::NRN_INIT_METHOD, BlockType::Initial);
+    print_wrapper_routine(naming::NRN_CUR_METHOD, BlockType::Equation);
+    print_wrapper_routine(naming::NRN_STATE_METHOD, BlockType::State);
+}
+
+void CodegenLLVMVisitor::print_data_structures() {
+    print_mechanism_global_var_structure();
+    print_mechanism_range_var_structure();
+    print_ion_var_structure();
 }
 
 void CodegenLLVMVisitor::print_wrapper_routines() {
@@ -820,7 +881,57 @@ void CodegenLLVMVisitor::print_wrapper_routines() {
     wrapper_codegen = true;
     print_backend_info();
     print_wrapper_headers_include();
-    print_instance_struct();
+    print_namespace_begin();
+
+    CodegenCVisitor::print_nmodl_constants();
+    print_mechanism_info();
+    print_data_structures();
+    print_global_variables_for_hoc();
+    print_common_getters();
+
+    print_memory_allocation_routine();
+    print_thread_memory_callbacks();
+    print_abort_routine();
+    print_global_variable_setup();
+
+    print_instance_variable_setup();
+    print_nrn_alloc();
+    print_top_verbatim_blocks();
+
+    // Are the following needed to generate the following:
+    // extern "C" void nrn_init_hh(hh_struct_instance* smth);
+    // extern "C" void nrn_cur_hh(hh_Instance* inst, NrnThread* nt, Memb_list* ml, int type);
+    // extern "C" void nrn_state_hh(hh_Instance* inst, NrnThread* nt, Memb_list* ml, int type);
+    // codegen code:
+    // for (const auto& function: wrapper_functions) {
+    //     if (!program_symtab->lookup(function->get_node_name())->has_all_status(Status::inlined)) {
+    //         fallback_codegen.print_function(*function);
+    //     }
+    // }
+    // for (const auto& procedure: wrapper_procedures) {
+    //     if (!program_symtab->lookup(procedure->get_node_name())->has_all_status(Status::inlined)) {
+    //         fallback_codegen.print_procedure(*procedure);
+    //     }
+    // }
+
+    print_check_table_thread_function();
+
+    print_net_send_buffering();
+    print_net_init();
+    print_watch_activate();
+
+    print_net_receive();
+
+    print_backend_compute_routine_decl();
+
+    // Not sure if this is needed?
+    print_net_receive_buffering_wrapper();
+
+    print_block_wrappers_initial_equation_state();
+
+    print_mechanism_register();
+
+    print_namespace_end();
     // print_instance_variable_setup();
     // print_nrn_init_wrapper();
     // print_function_wrappers();

@@ -375,7 +375,14 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     // Prints the cpp wrapper routines
     void print_wrapper_routines() override;
     void print_wrapper_headers_include();
-    void print_instance_struct();
+    void print_data_structures();
+    void print_mechanism_range_var_structure();
+    void print_instance_variable_setup();
+    void print_backend_compute_routine_decl();
+    void print_net_receive_buffering_wrapper();
+    void print_block_wrappers_initial_equation_state();
+    void print_wrapper_routine(const std::string& wrapper_function,
+                                               BlockType type);
 
 };
 
