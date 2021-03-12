@@ -18,6 +18,7 @@
 #include <ostream>
 #include <string>
 
+#include "codegen/codegen_c_visitor.hpp"
 #include "codegen/llvm/codegen_llvm_helper_visitor.hpp"
 #include "symtab/symbol_table.hpp"
 #include "utils/logger.hpp"
