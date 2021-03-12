@@ -1076,6 +1076,12 @@ class CodegenCVisitor: public visitor::ConstAstVisitor {
 
 
     /**
+     * Print the for loop statement going through all the mechanism instances
+     */
+    void print_channel_iteration_loop();
+
+
+    /**
      * Print channel iterations from which tasks are created
      *
      * \note This is not used for the C backend

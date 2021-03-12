@@ -859,13 +859,18 @@ bool CodegenCVisitor::shadow_vector_setup_required() {
 }
 
 
+void CodegenCVisitor::print_channel_iteration_loop() {
+    printer->start_block("for (int id = start; id < end; id++)");
+}
+
+
 /**
  * \details For CPU backend we iterate over all node counts. For cuda we use thread
  * index to check if block needs to be executed or not.
  */
 void CodegenCVisitor::print_channel_iteration_block_begin(BlockType type) {
     print_channel_iteration_block_parallel_hint(type);
-    printer->start_block("for (int id = start; id < end; id++)");
+    print_channel_iteration_loop();
 }
 
 
@@ -933,7 +938,7 @@ void CodegenCVisitor::print_atomic_reduction_pragma() {
 
 
 void CodegenCVisitor::print_shadow_reduction_block_begin() {
-    printer->start_block("for (int id = start; id < end; id++)");
+    print_channel_iteration_loop();
 }
 
 

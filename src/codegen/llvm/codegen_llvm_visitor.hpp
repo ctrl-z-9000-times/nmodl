@@ -77,9 +77,6 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     // Pointer to the current function.
     llvm::Function* current_func = nullptr;
 
-    // Pointer to AST symbol table.
-    symtab::SymbolTable* sym_tab;
-
     // Run optimisation passes if true.
     bool opt_passes;
 
@@ -94,6 +91,9 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
 
     // A flag to indicate that the code is generated for the kernel.
     bool is_kernel_code = false;
+
+    // Name of the instance struct type of the mechanism
+    std::string mechanism_instance_struct_type_name;
 
     /**
      *\brief Run LLVM optimisation passes on generated IR

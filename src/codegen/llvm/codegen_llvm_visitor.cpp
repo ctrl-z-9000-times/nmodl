@@ -144,7 +144,7 @@ unsigned CodegenLLVMVisitor::get_array_index_or_length(const ast::IndexedName& i
     // Check if integer value is taken from a macro.
     if (!integer->get_macro())
         return integer->get_value();
-    const auto& macro = sym_tab->lookup(integer->get_macro()->get_node_name());
+    const auto& macro = program_symtab->lookup(integer->get_macro()->get_node_name());
     return static_cast<unsigned>(*macro->get_value());
 }
 
@@ -223,8 +223,9 @@ llvm::Type* CodegenLLVMVisitor::get_instance_struct_type() {
         }
     }
 
+    mechanism_instance_struct_type_name = mod_filename + instance_struct_type_name;
     llvm::StructType* llvm_struct_type =
-        llvm::StructType::create(*context, mod_filename + instance_struct_type_name);
+        llvm::StructType::create(*context, mechanism_instance_struct_type_name);
     llvm_struct_type->setBody(members);
     return llvm::PointerType::get(llvm_struct_type, /*AddressSpace=*/0);
 }
@@ -731,7 +732,7 @@ void CodegenLLVMVisitor::visit_function_call(const ast::FunctionCall& node) {
     if (func) {
         create_function_call(func, name, node.get_arguments());
     } else {
-        auto symbol = sym_tab->lookup(name);
+        auto symbol = program_symtab->lookup(name);
         if (symbol && symbol->has_any_property(symtab::syminfo::NmodlType::extern_method)) {
             create_external_method_call(name, node.get_arguments());
         } else {
@@ -835,7 +836,7 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
     }
 
     // Set the AST symbol table.
-    sym_tab = node.get_symbol_table();
+    program_symtab = node.get_symbol_table();
 
     // Proceed with code generation. Right now, we do not do
     //     node.visit_children(*this);
@@ -868,17 +869,18 @@ void CodegenLLVMVisitor::print_wrapper_headers_include() {
 void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
     printer->add_newline(2);
     printer->add_line("/** Instance Struct passed as argument to LLVM IR kernels */");
-    printer->start_block("struct {} "_format(instance_struct_type_name));
+    printer->start_block("struct {} "_format(mechanism_instance_struct_type_name));
     for (const auto& variable: instance_var_helper.instance->get_codegen_vars()) {
         auto is_pointer = variable->get_is_pointer();
         auto nmodl_type = variable->get_type()->get_type();
         auto pointer = is_pointer ? "*" : "";
-        printer->add_indent();
+        auto var_name = variable->get_node_name();
+        auto qualifier = is_constant_variable(var_name) ? k_const() : "";
         switch (nmodl_type) {
-#define DISPATCH(type, c_type)                                                                    \
-    case type:                                                                                    \
-        printer->add_line("{}{} {}{};"_format(                                                    \
-            c_type, pointer, is_pointer ? ptr_type_qualifier() : "", variable->get_node_name())); \
+#define DISPATCH(type, c_type)                                                              \
+    case type:                                                                              \
+        printer->add_line("{}{}{} {}{};"_format(                                            \
+            qualifier, c_type, pointer, is_pointer ? ptr_type_qualifier() : "", var_name)); \
         break;
 
             DISPATCH(ast::AstNodeType::DOUBLE, "double");
@@ -892,7 +894,98 @@ void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
     printer->end_block();
 }
 
-void CodegenLLVMVisitor::print_instance_variable_setup() {}
+void CodegenLLVMVisitor::print_instance_variable_setup() {
+    if (range_variable_setup_required()) {
+        print_setup_range_variable();
+    }
+
+    if (shadow_vector_setup_required()) {
+        print_shadow_vector_setup();
+    }
+    printer->add_newline(2);
+    printer->add_line("/** initialize mechanism instance variables */");
+    printer->start_block("static inline void setup_instance(NrnThread* nt, Memb_list* ml) ");
+    printer->add_line("{0}* inst = ({0}*) mem_alloc(1, sizeof({0}));"_format(
+        mechanism_instance_struct_type_name));
+    if (channel_task_dependency_enabled() && !info.codegen_shadow_variables.empty()) {
+        printer->add_line("setup_shadow_vectors(inst, ml);");
+    }
+
+    std::string stride;
+    if (layout == LayoutType::soa) {
+        printer->add_line("int pnodecount = ml->_nodecount_padded;");
+        stride = "*pnodecount";
+    }
+
+    printer->add_line("Datum* indexes = ml->pdata;");
+
+    std::string float_type = default_float_data_type();
+    std::string int_type = default_int_data_type();
+    std::string float_type_pointer = float_type + "*";
+    std::string int_type_pointer = int_type + "*";
+
+    int id = 0;
+    std::vector<std::string> variables_to_free;
+
+    for (auto& var: info.codegen_float_variables) {
+        auto name = var->get_name();
+        auto range_var_type = get_range_var_float_type(var);
+        if (float_type == range_var_type) {
+            auto variable = "ml->data+{}{}"_format(id, stride);
+            auto device_variable = get_variable_device_pointer(variable, float_type_pointer);
+            printer->add_line("inst->{} = {};"_format(name, device_variable));
+        } else {
+            printer->add_line("inst->{} = setup_range_variable(ml->data+{}{}, pnodecount);"_format(
+                name, id, stride));
+            variables_to_free.push_back(name);
+        }
+        id += var->get_length();
+    }
+
+    for (auto& var: info.codegen_int_variables) {
+        auto name = var.symbol->get_name();
+        std::string variable = name;
+        std::string type = "";
+        if (var.is_index || var.is_integer) {
+            variable = "ml->pdata";
+            type = int_type_pointer;
+        } else if (var.is_vdata) {
+            variable = "nt->_vdata";
+            type = "void**";
+        } else {
+            variable = "nt->_data";
+            type = info.artificial_cell ? "void*" : float_type_pointer;
+        }
+        auto device_variable = get_variable_device_pointer(variable, type);
+        printer->add_line("inst->{} = {};"_format(name, device_variable));
+    }
+
+    int index_id = 0;
+    // for integer variables, there should be index
+    for (const auto& int_var: info.codegen_int_variables) {
+        std::string var_name = int_var.symbol->get_name() + "_index";
+        // Create for loop that instantiates the ion_<var>_index with
+        // indexes[<var_id>*pdnodecount+id] where id is from 0 to nodecount
+        print_channel_iteration_loop();
+        printer->add_line("inst->{} = indexes[{}*pnodecount+id];"_format(var_name, index_id));
+        printer->end_block(1);
+        index_id++;
+    }
+
+    printer->add_line("ml->instance = (void*) inst;");
+    printer->end_block(3);
+
+    printer->add_line("/** cleanup mechanism instance variables */");
+    printer->start_block("static inline void cleanup_instance(Memb_list* ml) ");
+    printer->add_line("{0}* inst = ({0}*) ml->instance;"_format(instance_struct()));
+    if (range_variable_setup_required()) {
+        for (auto& var: variables_to_free) {
+            printer->add_line("mem_free((void*)inst->{});"_format(var));
+        }
+    }
+    printer->add_line("mem_free((void*)inst);");
+    printer->end_block(1);
+}
 
 void CodegenLLVMVisitor::print_backend_compute_routine_decl() {}
 
@@ -932,7 +1025,6 @@ void CodegenLLVMVisitor::print_wrapper_routine(const std::string& wrapper_functi
     if (type == BlockType::Initial) {
         printer->add_newline();
         printer->add_line("setup_instance(nt, ml);");
-        printer->add_line("ispc_celsius = celsius;");
         printer->add_newline();
         printer->start_block("if (_nrn_skip_initmodel)");
         printer->add_line("return;");
