@@ -966,11 +966,25 @@ void CodegenLLVMVisitor::print_instance_variable_setup() {
         std::string var_name = int_var.symbol->get_name() + "_index";
         // Create for loop that instantiates the ion_<var>_index with
         // indexes[<var_id>*pdnodecount+id] where id is from 0 to nodecount
-        print_channel_iteration_loop();
-        printer->add_line("inst->{} = indexes[{}*pnodecount+id];"_format(var_name, index_id));
+        printer->add_line("inst->{} = mem_alloc(pnodecount, sizeof(int));"_format(var_name));
+        print_channel_iteration_loop("0", "pnodecount");
+        printer->add_line("inst->{}[id] = indexes[{}*pnodecount+id];"_format(var_name, index_id));
         printer->end_block(1);
         index_id++;
     }
+
+    // Pass voltage pointer to the the instance struct
+    printer->add_line("inst->voltage = nt->_actual_v;");
+
+    // Pass ml->nodeindices pointer to node_index
+    printer->add_line("inst->node_index = ml->nodeindices;");
+
+    // Setup global variables
+    printer->add_line("inst->{0} = nt->{0};"_format(naming::NTHREAD_T_VARIABLE));
+    printer->add_line("inst->{0} = nt->{0};"_format(naming::NTHREAD_DT_VARIABLE));
+    printer->add_line("inst->{0} = {0};"_format(naming::CELSIUS_VARIABLE));
+    printer->add_line("inst->{0} = {0};"_format(naming::SECOND_ORDER_VARIABLE));
+    printer->add_line("inst->{} = ml->nodecount;"_format(naming::MECH_NODECOUNT_VAR));
 
     printer->add_line("ml->instance = (void*) inst;");
     printer->end_block(3);
@@ -978,6 +992,10 @@ void CodegenLLVMVisitor::print_instance_variable_setup() {
     printer->add_line("/** cleanup mechanism instance variables */");
     printer->start_block("static inline void cleanup_instance(Memb_list* ml) ");
     printer->add_line("{0}* inst = ({0}*) ml->instance;"_format(instance_struct()));
+    for (const auto& int_var: info.codegen_int_variables) {
+        std::string var_name = int_var.symbol->get_name() + "_index";
+        printer->add_line("mem_free((void*)inst->{});"_format(var_name));
+    }
     if (range_variable_setup_required()) {
         for (auto& var: variables_to_free) {
             printer->add_line("mem_free((void*)inst->{});"_format(var));

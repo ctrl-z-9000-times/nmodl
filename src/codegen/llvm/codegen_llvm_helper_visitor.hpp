@@ -116,13 +116,6 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
     const ast::AstNodeType INTEGER_TYPE = ast::AstNodeType::INTEGER;
     const ast::AstNodeType FLOAT_TYPE = ast::AstNodeType::DOUBLE;
 
-    /// name of the mechanism instance parameter
-    const std::string MECH_INSTANCE_VAR = "mech";
-    const std::string MECH_NODECOUNT_VAR = "node_count";
-
-    /// name of induction variable used in the kernel.
-    const std::string INDUCTION_VAR = "id";
-
     /// create new function for FUNCTION or PROCEDURE block
     void create_function_for_node(ast::Block& node);
 
@@ -138,7 +131,7 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
     }
 
     std::string get_kernel_id() {
-        return INDUCTION_VAR;
+        return naming::INDUCTION_VAR;
     }
 
     /// run visitor and return code generation functions

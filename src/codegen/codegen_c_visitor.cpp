@@ -859,8 +859,9 @@ bool CodegenCVisitor::shadow_vector_setup_required() {
 }
 
 
-void CodegenCVisitor::print_channel_iteration_loop() {
-    printer->start_block("for (int id = start; id < end; id++)");
+void CodegenCVisitor::print_channel_iteration_loop(const std::string& start = "start",
+                                                   const std::string& end = "end") {
+    printer->start_block("for (int id = {}; id < {}; id++)"_format(start, end));
 }
 
 
