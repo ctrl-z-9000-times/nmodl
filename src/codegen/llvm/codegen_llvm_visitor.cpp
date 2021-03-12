@@ -1017,19 +1017,16 @@ CodegenLLVMVisitor::ParamVector CodegenLLVMVisitor::get_compute_function_paramet
 void CodegenLLVMVisitor::print_backend_compute_routine_decl() {
     auto params = get_compute_function_parameter();
     auto compute_function = compute_method_name(BlockType::Initial);
-    printer->add_line(
-        "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+    printer->add_line("extern int {}({});"_format(compute_function, get_parameter_str(params)));
 
     if (info.nrn_cur_required()) {
         compute_function = compute_method_name(BlockType::Equation);
-        printer->add_line(
-            "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+        printer->add_line("extern int {}({});"_format(compute_function, get_parameter_str(params)));
     }
 
     if (info.nrn_state_required()) {
         compute_function = compute_method_name(BlockType::State);
-        printer->add_line(
-            "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+        printer->add_line("extern int {}({});"_format(compute_function, get_parameter_str(params)));
     }
 
     if (info.net_receive_required()) {
