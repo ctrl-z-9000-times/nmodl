@@ -1005,7 +1005,42 @@ void CodegenLLVMVisitor::print_instance_variable_setup() {
     printer->end_block(1);
 }
 
-void CodegenLLVMVisitor::print_backend_compute_routine_decl() {}
+CodegenLLVMVisitor::ParamVector CodegenLLVMVisitor::get_compute_function_parameter() {
+    auto params = ParamVector();
+    params.emplace_back(param_type_qualifier(),
+                        "{}*"_format(instance_struct()),
+                        param_ptr_qualifier(),
+                        "inst");
+    return params;
+}
+
+void CodegenLLVMVisitor::print_backend_compute_routine_decl() {
+    auto params = get_compute_function_parameter();
+    auto compute_function = compute_method_name(BlockType::Initial);
+    printer->add_line(
+        "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+
+    if (info.nrn_cur_required()) {
+        compute_function = compute_method_name(BlockType::Equation);
+        printer->add_line(
+            "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+    }
+
+    if (info.nrn_state_required()) {
+        compute_function = compute_method_name(BlockType::State);
+        printer->add_line(
+            "extern int {}({});"_format(compute_function, get_parameter_str(params)));
+    }
+
+    if (info.net_receive_required()) {
+        auto net_recv_params = ParamVector();
+        net_recv_params.emplace_back("", "{}*"_format(instance_struct()), "", "inst");
+        net_recv_params.emplace_back("", "NrnThread*", "", "nt");
+        net_recv_params.emplace_back("", "Memb_list*", "", "ml");
+        printer->add_line("extern \"C\" void {}({});"_format(method_name("llvm_net_buf_receive"),
+                                                             get_parameter_str(net_recv_params)));
+    }
+}
 
 // Currently copied from CodegenIspcVisitor
 void CodegenLLVMVisitor::print_net_receive_buffering_wrapper() {
@@ -1050,7 +1085,7 @@ void CodegenLLVMVisitor::print_wrapper_routine(const std::string& wrapper_functi
         printer->add_newline();
     }
 
-    printer->add_line("{}(inst, nt, ml, type);"_format(compute_function));
+    printer->add_line("{}(inst);"_format(compute_function));
     printer->end_block();
     printer->add_newline();
 }
