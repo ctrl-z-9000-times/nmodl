@@ -869,7 +869,7 @@ void CodegenLLVMVisitor::print_wrapper_headers_include() {
 void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
     printer->add_newline(2);
     printer->add_line("/** Instance Struct passed as argument to LLVM IR kernels */");
-    printer->start_block("struct {} "_format(mechanism_instance_struct_type_name));
+    printer->start_block("struct {} "_format(instance_struct()));
     for (const auto& variable: instance_var_helper.instance->get_codegen_vars()) {
         auto is_pointer = variable->get_is_pointer();
         auto nmodl_type = variable->get_type()->get_type();
@@ -905,8 +905,7 @@ void CodegenLLVMVisitor::print_instance_variable_setup() {
     printer->add_newline(2);
     printer->add_line("/** initialize mechanism instance variables */");
     printer->start_block("static inline void setup_instance(NrnThread* nt, Memb_list* ml) ");
-    printer->add_line("{0}* inst = ({0}*) mem_alloc(1, sizeof({0}));"_format(
-        mechanism_instance_struct_type_name));
+    printer->add_line("{0}* inst = ({0}*) mem_alloc(1, sizeof({0}));"_format(instance_struct()));
     if (channel_task_dependency_enabled() && !info.codegen_shadow_variables.empty()) {
         printer->add_line("setup_shadow_vectors(inst, ml);");
     }
