@@ -112,9 +112,11 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
     /// mechanism data helper
     InstanceVarHelper instance_var_helper;
 
-    /// default integer and float node type
-    const ast::AstNodeType INTEGER_TYPE = ast::AstNodeType::INTEGER;
-    const ast::AstNodeType FLOAT_TYPE = ast::AstNodeType::DOUBLE;
+    /// name of the mechanism instance parameter
+    const std::string MECH_INSTANCE_VAR = "mech";
+
+    /// name of induction variable used in the kernel.
+    const std::string INDUCTION_VAR = "id";
 
     /// create new function for FUNCTION or PROCEDURE block
     void create_function_for_node(ast::Block& node);
@@ -123,6 +125,15 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
     std::shared_ptr<ast::InstanceStruct> create_instance_struct();
 
   public:
+    /// default integer and float node type
+    static const ast::AstNodeType INTEGER_TYPE;
+    static const ast::AstNodeType FLOAT_TYPE;
+
+    // node count, voltage and node index variables
+    static const std::string NODECOUNT_VAR;
+    static const std::string VOLTAGE_VAR;
+    static const std::string NODE_INDEX_VAR;
+
     CodegenLLVMHelperVisitor(int vector_width)
         : vector_width(vector_width){};
 
