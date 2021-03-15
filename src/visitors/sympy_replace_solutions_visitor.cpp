@@ -132,8 +132,9 @@ void SympyReplaceSolutionsVisitor::visit_statement_block(ast::StatementBlock& no
     if (current_is_top_level_statement_block) {
         if (!solution_statements.tags.empty()) {
             std::ostringstream ss;
+            const auto& statements = solution_statements.statement_block->get_statements();
             for (const auto ii: solution_statements.tags) {
-                ss << to_nmodl(solution_statements.statements[ii]) << '\n';
+                ss << to_nmodl(statements[ii]) << '\n';
             }
             throw std::runtime_error(
                 "Not all solutions were replaced! Sympy returned {} equations but I could not find "
@@ -145,8 +146,7 @@ void SympyReplaceSolutionsVisitor::visit_statement_block(ast::StatementBlock& no
                 "sympy "
                 "returned more equations than what we expected\n - There is a bug in the GREEDY "
                 "pass\n - some "
-                "solutions were replaced but not untagged"_format(
-                    solution_statements.statements.size(), ss.str()));
+                "solutions were replaced but not untagged"_format(statements.size(), ss.str()));
         }
 
         if (replaced_statements_range.first == -1) {
@@ -270,7 +270,7 @@ SympyReplaceSolutionsVisitor::StatementDispenser::StatementDispenser(
     const std::vector<std::string>::const_iterator& statements_str_beg,
     const std::vector<std::string>::const_iterator& statements_str_end,
     const int error_on_n_flushes)
-    : statements(create_statements(statements_str_beg, statements_str_end))
+    : statement_block(create_statement_block(statements_str_beg, statements_str_end))
     , error_on_n_flushes(error_on_n_flushes) {
     tag_all_statements();
     build_maps();
@@ -278,7 +278,7 @@ SympyReplaceSolutionsVisitor::StatementDispenser::StatementDispenser(
 
 
 /**
- * \details CHere we construct a map variable -> affected equations. In other words this map tells
+ * \details Here we construct a map variable -> affected equations. In other words this map tells
  * me what equations need to be updated when I change a particular variable. To do that we build a a
  * graph of dependencies var -> vars and in the mean time we reduce it to the root variables. This
  * is ensured by the fact that the tmp variables are sorted so that the next tmp variable may depend
@@ -310,6 +310,7 @@ SympyReplaceSolutionsVisitor::StatementDispenser::StatementDispenser(
  *
  */
 void SympyReplaceSolutionsVisitor::StatementDispenser::build_maps() {
+    const auto& statements = statement_block->get_statements();
     for (size_t ii = 0; ii < statements.size(); ++ii) {
         const auto& statement = statements[ii];
 
@@ -364,6 +365,7 @@ void SympyReplaceSolutionsVisitor::StatementDispenser::build_maps() {
 bool SympyReplaceSolutionsVisitor::StatementDispenser::try_emplace_back_tagged_statement(
     ast::StatementVector& new_statements,
     const std::string& var) {
+    const auto& statements = statement_block->get_statements();
     auto ptr = var2statement.find(var);
     bool emplaced = false;
     if (ptr != var2statement.end()) {
@@ -391,6 +393,7 @@ bool SympyReplaceSolutionsVisitor::StatementDispenser::try_emplace_back_tagged_s
 size_t SympyReplaceSolutionsVisitor::StatementDispenser::emplace_back_next_tagged_statements(
     ast::StatementVector& new_statements,
     const size_t n_next_statements) {
+    const auto& statements = statement_block->get_statements();
     size_t counter = 0;
     for (size_t next_statement_ii = 0;
          next_statement_ii < statements.size() && counter < n_next_statements;
@@ -410,6 +413,7 @@ size_t SympyReplaceSolutionsVisitor::StatementDispenser::emplace_back_next_tagge
 
 size_t SympyReplaceSolutionsVisitor::StatementDispenser::emplace_back_all_tagged_statements(
     ast::StatementVector& new_statements) {
+    const auto& statements = statement_block->get_statements();
     for (const auto ii: tags) {
         new_statements.emplace_back(statements[ii]->clone());
         logger->debug(
@@ -438,6 +442,7 @@ size_t SympyReplaceSolutionsVisitor::StatementDispenser::emplace_back_all_tagged
 
 size_t SympyReplaceSolutionsVisitor::StatementDispenser::tag_dependant_statements(
     const std::string& var) {
+    const auto& statements = statement_block->get_statements();
     auto ptr = var2dependants.find(var);
     size_t n = 0;
     if (ptr != var2dependants.end()) {
@@ -454,6 +459,7 @@ size_t SympyReplaceSolutionsVisitor::StatementDispenser::tag_dependant_statement
 }
 
 void SympyReplaceSolutionsVisitor::StatementDispenser::tag_all_statements() {
+    const auto& statements = statement_block->get_statements();
     logger->debug("SympyReplaceSolutionsVisitor::StatementDispenser :: tagging all statements");
     for (size_t i = 0; i < statements.size(); ++i) {
         tags.insert(i);

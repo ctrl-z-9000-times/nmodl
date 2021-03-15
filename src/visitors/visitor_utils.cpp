@@ -11,8 +11,7 @@
 #include <memory>
 #include <string>
 
-#include "ast/all.hpp"
-#include "parser/nmodl_driver.hpp"
+
 #include "utils/string_utils.hpp"
 #include "visitors/json_visitor.hpp"
 #include "visitors/lookup_visitor.hpp"
@@ -123,39 +122,6 @@ std::shared_ptr<Statement> create_statement(const std::string& code_statement) {
     return statement;
 }
 
-std::vector<std::shared_ptr<Statement>> create_statements(
-    const std::vector<std::string>::const_iterator& code_statements_beg,
-    const std::vector<std::string>::const_iterator& code_statements_end) {
-    std::vector<std::shared_ptr<Statement>> statements;
-    statements.reserve(code_statements_end - code_statements_beg);
-    std::transform(code_statements_beg,
-                   code_statements_end,
-                   std::back_inserter(statements),
-                   [](const std::string& s) { return create_statement(s); });
-    return statements;
-}
-
-/**
- * Convert given code statement (in string format) to corresponding ast node
- *
- * We create dummy nmodl procedure containing given code statement and then
- * parse it using NMODL parser. As there will be only one block with single
- * statement, we return first statement.
- */
-std::shared_ptr<StatementBlock> create_statement_block(
-    const std::vector<std::string>& code_statements) {
-    nmodl::parser::NmodlDriver driver;
-    std::string nmodl_text = "PROCEDURE dummy() {\n";
-    for (auto& statement: code_statements) {
-        nmodl_text += statement + "\n";
-    }
-    nmodl_text += "}";
-    auto ast = driver.parse_string(nmodl_text);
-    auto procedure = std::dynamic_pointer_cast<ProcedureBlock>(ast->get_blocks().front());
-    auto statement_block = std::shared_ptr<StatementBlock>(
-        procedure->get_statement_block()->clone());
-    return statement_block;
-}
 
 std::set<std::string> get_global_vars(const Program& node) {
     std::set<std::string> vars;

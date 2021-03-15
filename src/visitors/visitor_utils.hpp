@@ -17,8 +17,11 @@
 #include <string>
 #include <unordered_set>
 
+#include <ast/all.hpp>
 #include <ast/ast_decl.hpp>
+#include <parser/nmodl_driver.hpp>
 #include <utils/common_utils.hpp>
+
 
 namespace nmodl {
 namespace visitor {
@@ -67,10 +70,29 @@ std::vector<std::shared_ptr<ast::Statement>> create_statements(
     const std::vector<std::string>::const_iterator& code_statements_beg,
     const std::vector<std::string>::const_iterator& code_statements_end);
 
-
-/// Create ast statement block node from given code in string format
-std::shared_ptr<ast::StatementBlock> create_statement_block(
-    const std::vector<std::string>& code_statements);
+/**
+ * Convert given code statement (in string format) to corresponding ast node
+ *
+ * We create dummy nmodl procedure containing given code statement and then
+ * parse it using NMODL parser. As there will be only one block with single
+ * statement, we return first statement.
+ */
+template <class InputIterator>
+std::shared_ptr<ast::StatementBlock> create_statement_block(InputIterator code_statements_beg,
+                                                            InputIterator code_statements_end) {
+    nmodl::parser::NmodlDriver driver;
+    std::string nmodl_text = "PROCEDURE dummy() {\n";
+    for (auto& statement_ptr = code_statements_beg; statement_ptr != code_statements_end;
+         ++statement_ptr) {
+        nmodl_text += (*statement_ptr) + "\n";
+    }
+    nmodl_text += "}";
+    auto ast = driver.parse_string(nmodl_text);
+    auto procedure = std::dynamic_pointer_cast<ast::ProcedureBlock>(ast->get_blocks().front());
+    auto statement_block = std::shared_ptr<ast::StatementBlock>(
+        procedure->get_statement_block()->clone());
+    return statement_block;
+}
 
 
 ///  Remove statements from given statement block if they exist

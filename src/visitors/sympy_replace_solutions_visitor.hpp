@@ -383,7 +383,7 @@ class SympyReplaceSolutionsVisitor: public AstVisitor {
         /**
          * \brief a (key) : f(..., a, ...), g(..., a, ...), h(..., a, ...), ... (values)
          *
-         * This the "reverse" of \ref dependency_map_. Given a certain variable it provides
+         * This is the "reverse" of \ref dependency_map_. Given a certain variable it provides
          * the statements that depend on it. It is a set because we want to print them in
          * order and we do not want duplicates. The value is the index in \ref statements_ or \ref
          * tags_
@@ -423,8 +423,8 @@ class SympyReplaceSolutionsVisitor: public AstVisitor {
          */
         std::unordered_map<std::string, size_t> var2statement;
 
-        /// Vector of statements
-        std::vector<std::shared_ptr<ast::Statement>> statements;
+        /// Statement block that cointaints the statements
+        std::shared_ptr<ast::StatementBlock> statement_block;
 
         /**
          * \brief Keeps track of what statements need updating

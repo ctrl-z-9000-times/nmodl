@@ -257,7 +257,9 @@ void SympySolverVisitor::construct_eigen_solver_block(
 
     auto variable_block = std::make_shared<ast::StatementBlock>(std::move(variable_statements));
     auto initialize_block = std::make_shared<ast::StatementBlock>(std::move(initialize_statements));
-    auto update_state_block = create_statement_block(update_statements);
+    auto update_state_block = create_statement_block(update_statements.begin(),
+                                                     update_statements.end());
+    //            update_statements.end());
     auto finalize_block = std::make_shared<ast::StatementBlock>(std::move(finalize_statements));
     if (linear) {
         /// functor and initialize block converge in the same block
