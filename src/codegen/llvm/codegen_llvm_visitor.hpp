@@ -324,8 +324,10 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     void visit_var_name(const ast::VarName& node) override;
     void visit_while_statement(const ast::WhileStatement& node) override;
 
-    // Override functions from CodegenCVisitor to the ones from visitor::ConstsAstVisitor as it was
-    // originally for CodegenLLVMVisitor
+    /*
+     * Override functions from CodegenCVisitor to the ones from visitor::ConstsAstVisitor as it was
+     * originally for CodegenLLVMVisitor
+     */
     void visit_binary_operator(const ast::BinaryOperator& node) {
         visitor::ConstAstVisitor::visit_binary_operator(node);
     }
@@ -399,20 +401,35 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
         target_printer->add_multi_line(print_module());
     }
 
-    // Prints the cpp wrapper routines
+    /*
+     * Functions related to printing the wrapper cpp file
+     */
+    void print_compute_functions() override;
     void print_wrapper_routines() override;
     void print_wrapper_headers_include();
     void print_data_structures();
     void print_mechanism_range_var_structure();
     void print_instance_variable_setup();
+
+    /*
+     * Declare the external compute functions (nrn_init, nrn_cur and nrn_state)
+     */
     void print_backend_compute_routine_decl();
-    void print_net_receive_buffering_wrapper();
-    void print_block_wrappers_initial_equation_state();
+    /*
+     * Define the wrappers for the external compute functions (nrn_init, nrn_cur and nrn_state)
+     */
+    void print_backend_compute_routine();
+    /*
+     * Print the wrapper routine based on the parameters given
+     * \param wrapper_function The name of the function to wrap
+     * \param type The \c BlockType that this function is based on
+     */
     void print_wrapper_routine(const std::string& wrapper_function, BlockType type);
+    /*
+     * Function that returns a vector of Parameters needed to be passed to the compute routines.
+     * The first argument should be an object of \c mechanism_instance_struct_type_name
+     */
     CodegenLLVMVisitor::ParamVector get_compute_function_parameter();
-    std::string instance_struct() const {
-        return mechanism_instance_struct_type_name;
-    }
 };
 
 /** \} */  // end of llvm_backends

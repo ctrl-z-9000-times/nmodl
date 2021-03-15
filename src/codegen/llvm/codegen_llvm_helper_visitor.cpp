@@ -522,7 +522,8 @@ void CodegenLLVMHelperVisitor::visit_nrn_state_block(ast::NrnStateBlock& node) {
 
     /// loop constructs : initialization, condition and increment
     const auto& initialization = loop_initialization_expression(naming::INDUCTION_VAR);
-    const auto& condition = create_expression("{} < {}"_format(naming::INDUCTION_VAR, NODECOUNT_VAR));
+    const auto& condition = create_expression(
+        "{} < {}"_format(naming::INDUCTION_VAR, NODECOUNT_VAR));
     const auto& increment = loop_increment_expression(naming::INDUCTION_VAR, vector_width);
 
     /// loop body : initialization + solve blocks
