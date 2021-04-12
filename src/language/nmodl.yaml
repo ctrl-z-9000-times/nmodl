@@ -2054,6 +2054,8 @@
                             type: Expression
                             vector: true
                             separator: ", "
+                            prefix: {value: "(", force: true}
+                            suffix: {value: ")", force: true}
                         - variables:
                             brief: "Vector of random variables"
                             type: RandomVar
