@@ -29,7 +29,7 @@ trigger cvf:
     SPACK_PACKAGE_REF_nmodl: "commit='${CI_COMMIT_SHA}'"
   rules:
     # Don't run on the LLVM development branch
-    - if: '$CI_COMMIT_BRANCH == llvm'
+    - if: '$CI_COMMIT_BRANCH == "llvm"'
       when: never
     # Otherwise always run this
     - when: always
