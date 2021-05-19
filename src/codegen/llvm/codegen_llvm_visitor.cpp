@@ -861,12 +861,11 @@ void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
         auto nmodl_type = variable->get_type()->get_type();
         auto pointer = is_pointer ? "*" : "";
         auto var_name = variable->get_node_name();
-        auto qualifier = is_constant_variable(var_name) ? k_const() : "";
         switch (nmodl_type) {
-#define DISPATCH(type, c_type)                                                              \
-    case type:                                                                              \
-        printer->add_line("{}{}{} {}{};"_format(                                            \
-            qualifier, c_type, pointer, is_pointer ? ptr_type_qualifier() : "", var_name)); \
+#define DISPATCH(type, c_type)                                                    \
+    case type:                                                                    \
+        printer->add_line("{}{} {}{};"_format(                                    \
+            c_type, pointer, is_pointer ? ptr_type_qualifier() : "", var_name));  \
         break;
 
             DISPATCH(ast::AstNodeType::DOUBLE, "double");
