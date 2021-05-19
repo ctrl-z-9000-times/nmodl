@@ -994,7 +994,7 @@ CodegenLLVMVisitor::ParamVector CodegenLLVMVisitor::get_compute_function_paramet
     auto params = ParamVector();
     params.emplace_back(param_type_qualifier(),
                         "{}*"_format(mod_filename + instance_struct_type_name),
-                        param_ptr_qualifier(),
+                        ptr_type_qualifier(),
                         "inst");
     return params;
 }
