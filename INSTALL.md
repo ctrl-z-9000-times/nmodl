@@ -46,9 +46,15 @@ Make sure to have latest flex/bison in $PATH :
 export PATH=/usr/local/opt/flex/bin:/usr/local/opt/bison/bin:/usr/local/bin/:$PATH
 ```
 
+On Apple M1, corresponding brew paths are under `/opt/homebrew/opt/`:
+
+```sh
+export PATH=/opt/homebrew/opt/flex/bin:/opt/homebrew/opt/bison/bin:$PATH
+```
+
 ### On Ubuntu
 
-On Ubuntu (>=16.04) flex/bison versions are recent enough and are installed along with the system toolchain:
+On Ubuntu (>=18.04) flex/bison versions are recent enough and are installed along with the system toolchain:
 
 ```sh
 apt-get install flex bison gcc python3 python3-pip llvm-dev llvm-runtime llvm clang-format clang

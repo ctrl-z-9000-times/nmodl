@@ -81,6 +81,9 @@ static const uniform float PX6expf = 5.0000001201E-1f;
 
 static const uniform float LOG2EF = 1.44269504088896341f; // 1/ln(2)
 
+static const uniform double LOG10E = 0.4342944819032518d;   // 1/log(10) double
+static const uniform float LOG10F = 0.4342945f;   // 1/log(10) float
+
 static inline double egm1(double x, double px) {
 
     x -= px * 6.93145751953125d-1;
@@ -220,4 +223,12 @@ static inline float exprelr(float initial_x) {
     return initial_x/vexpm1(initial_x);
 }
 
+/// double precision log10 function
+static inline double log10(double f) {
+    return log(f) * LOG10E;
+}
 
+/// single precision log10 function
+static inline float log10(float f) {
+    return log(f) * LOG10F;
+}

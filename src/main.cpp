@@ -20,6 +20,7 @@
 
 #ifdef NMODL_LLVM_BACKEND
 #include "codegen/llvm/codegen_llvm_visitor.hpp"
+#include "test/benchmark/llvm_benchmark.hpp"
 #endif
 
 #include "config/config.h"
@@ -160,9 +161,6 @@ int main(int argc, const char* argv[]) {
     /// true if symbol table should be printed
     bool show_symtab(false);
 
-    /// memory layout for code generation
-    std::string layout("soa");
-
     /// floating point data type
     std::string data_type("double");
 
@@ -174,10 +172,37 @@ int main(int argc, const char* argv[]) {
     bool llvm_float_type(false);
 
     /// run llvm optimisation passes
-    bool llvm_opt_passes(false);
+    bool llvm_ir_opt_passes(false);
 
-    /// llvm vector width;
+    /// llvm vector width
     int llvm_vec_width = 1;
+
+    /// vector library name
+    std::string vector_library("none");
+
+    /// disable debug information generation for the IR
+    bool disable_debug_information(false);
+
+    /// run llvm benchmark
+    bool run_llvm_benchmark(false);
+
+    /// optimisation level for IR generation
+    int llvm_opt_level_ir = 0;
+
+    /// optimisation level for machine code generation
+    int llvm_opt_level_codegen = 0;
+
+    /// list of shared libraries to link against in JIT
+    std::vector<std::string> shared_lib_paths;
+
+    /// the size of the instance struct for the benchmark
+    int instance_size = 10000;
+
+    /// the number of repeated experiments for the benchmarking
+    int num_experiments = 100;
+
+    /// specify the backend for LLVM IR to target
+    std::string backend = "default";
 #endif
 
     app.get_formatter()->column_width(40);
@@ -269,12 +294,8 @@ int main(int argc, const char* argv[]) {
         "Write symbol table to stdout ({})"_format(show_symtab))->ignore_case();
 
     auto codegen_opt = app.add_subcommand("codegen", "Code generation options")->ignore_case();
-    codegen_opt->add_option("--layout",
-        layout,
-        "Memory layout for code generation",
-        true)->ignore_case()->check(CLI::IsMember({"aos", "soa"}));
     codegen_opt->add_option("--datatype",
-        layout,
+        data_type,
         "Data type for floating point variables",
         true)->ignore_case()->check(CLI::IsMember({"float", "double"}));
     codegen_opt->add_flag("--force",
@@ -288,19 +309,51 @@ int main(int argc, const char* argv[]) {
         "Optimize copies of ion variables ({})"_format(optimize_ionvar_copies_codegen))->ignore_case();
 
 #ifdef NMODL_LLVM_BACKEND
+
+    // LLVM IR code generation options.
     auto llvm_opt = app.add_subcommand("llvm", "LLVM code generation option")->ignore_case();
     llvm_opt->add_flag("--ir",
         llvm_ir,
         "Generate LLVM IR ({})"_format(llvm_ir))->ignore_case();
+    llvm_opt->add_flag("--disable-debug-info",
+                       disable_debug_information,
+                       "Disable debug information ({})"_format(disable_debug_information))->ignore_case();
     llvm_opt->add_flag("--opt",
-        llvm_opt_passes,
-        "Run LLVM optimisation passes ({})"_format(llvm_opt_passes))->ignore_case();
+                       llvm_ir_opt_passes,
+                       "Run few common LLVM IR optimisation passes ({})"_format(llvm_ir_opt_passes))->ignore_case();
     llvm_opt->add_flag("--single-precision",
                        llvm_float_type,
                        "Use single precision floating-point types ({})"_format(llvm_float_type))->ignore_case();
     llvm_opt->add_option("--vector-width",
         llvm_vec_width,
         "LLVM explicit vectorisation width ({})"_format(llvm_vec_width))->ignore_case();
+    llvm_opt->add_option("--veclib",
+                         vector_library,
+                         "Vector library for maths functions ({})"_format(vector_library))->check(CLI::IsMember({"Accelerate", "libmvec", "MASSV", "SVML", "none"}));
+
+    // LLVM IR benchmark options.
+    auto benchmark_opt = app.add_subcommand("benchmark", "LLVM benchmark option")->ignore_case();
+    benchmark_opt->add_flag("--run",
+                            run_llvm_benchmark,
+                            "Run LLVM benchmark ({})"_format(run_llvm_benchmark))->ignore_case();
+    benchmark_opt->add_option("--opt-level-ir",
+                              llvm_opt_level_ir,
+                              "LLVM IR optimisation level (O{})"_format(llvm_opt_level_ir))->ignore_case()->check(CLI::IsMember({"0", "1", "2", "3"}));
+    benchmark_opt->add_option("--opt-level-codegen",
+                              llvm_opt_level_codegen,
+                              "Machine code optimisation level (O{})"_format(llvm_opt_level_codegen))->ignore_case()->check(CLI::IsMember({"0", "1", "2", "3"}));
+    benchmark_opt->add_option("--libs", shared_lib_paths, "Shared libraries to link IR against")
+            ->ignore_case()
+            ->check(CLI::ExistingFile);
+    benchmark_opt->add_option("--instance-size",
+                       instance_size,
+                       "Instance struct size ({})"_format(instance_size))->ignore_case();
+    benchmark_opt->add_option("--repeat",
+                              num_experiments,
+                              "Number of experiments for benchmarking ({})"_format(num_experiments))->ignore_case();
+    benchmark_opt->add_option("--backend",
+                       backend,
+                       "Target's backend ({})"_format(backend))->ignore_case()->check(CLI::IsMember({"avx2", "default", "sse2"}));
 #endif
     // clang-format on
 
@@ -516,7 +569,11 @@ int main(int argc, const char* argv[]) {
             ast_to_nmodl(*ast, filepath("sympy_conductance", "mod"));
         }
 
-        if (sympy_analytic) {
+        if (sympy_analytic || sparse_solver_exists(*ast)) {
+            if (!sympy_analytic) {
+                logger->info(
+                    "Automatically enable sympy_analytic because it exists solver of type sparse");
+            }
             logger->info("Running sympy solve visitor");
             SympySolverVisitor(sympy_pade, sympy_cse).visit_program(*ast);
             SymtabVisitor(update_symtab).visit_program(*ast);
@@ -548,52 +605,78 @@ int main(int argc, const char* argv[]) {
         }
 
         {
-            auto mem_layout = layout == "aos" ? codegen::LayoutType::aos : codegen::LayoutType::soa;
-
-
             if (ispc_backend) {
                 logger->info("Running ISPC backend code generator");
-                CodegenIspcVisitor visitor(
-                    modfile, output_dir, mem_layout, data_type, optimize_ionvar_copies_codegen);
+                CodegenIspcVisitor visitor(modfile,
+                                           output_dir,
+                                           data_type,
+                                           optimize_ionvar_copies_codegen);
                 visitor.visit_program(*ast);
             }
 
             else if (oacc_backend) {
                 logger->info("Running OpenACC backend code generator");
-                CodegenAccVisitor visitor(
-                    modfile, output_dir, mem_layout, data_type, optimize_ionvar_copies_codegen);
+                CodegenAccVisitor visitor(modfile,
+                                          output_dir,
+                                          data_type,
+                                          optimize_ionvar_copies_codegen);
                 visitor.visit_program(*ast);
             }
 
             else if (omp_backend) {
                 logger->info("Running OpenMP backend code generator");
-                CodegenOmpVisitor visitor(
-                    modfile, output_dir, mem_layout, data_type, optimize_ionvar_copies_codegen);
+                CodegenOmpVisitor visitor(modfile,
+                                          output_dir,
+                                          data_type,
+                                          optimize_ionvar_copies_codegen);
                 visitor.visit_program(*ast);
             }
 
             else if (c_backend) {
                 logger->info("Running C backend code generator");
-                CodegenCVisitor visitor(
-                    modfile, output_dir, mem_layout, data_type, optimize_ionvar_copies_codegen);
+                CodegenCVisitor visitor(modfile,
+                                        output_dir,
+                                        data_type,
+                                        optimize_ionvar_copies_codegen);
                 visitor.visit_program(*ast);
             }
 
             if (cuda_backend) {
                 logger->info("Running CUDA backend code generator");
-                CodegenCudaVisitor visitor(
-                    modfile, output_dir, mem_layout, data_type, optimize_ionvar_copies_codegen);
+                CodegenCudaVisitor visitor(modfile,
+                                           output_dir,
+                                           data_type,
+                                           optimize_ionvar_copies_codegen);
                 visitor.visit_program(*ast);
             }
 
 #ifdef NMODL_LLVM_BACKEND
-            if (llvm_ir) {
+            if (llvm_ir || run_llvm_benchmark) {
                 logger->info("Running LLVM backend code generator");
-                CodegenLLVMVisitor visitor(
-                    modfile, output_dir, llvm_opt_passes, llvm_float_type, llvm_vec_width);
+                CodegenLLVMVisitor visitor(modfile,
+                                           output_dir,
+                                           llvm_ir_opt_passes,
+                                           llvm_float_type,
+                                           llvm_vec_width,
+                                           vector_library,
+                                           !disable_debug_information);
                 visitor.visit_program(*ast);
                 ast_to_nmodl(*ast, filepath("llvm", "mod"));
                 ast_to_json(*ast, filepath("llvm", "json"));
+
+                if (run_llvm_benchmark) {
+                    logger->info("Running LLVM benchmark");
+                    benchmark::LLVMBenchmark benchmark(visitor,
+                                                       modfile,
+                                                       output_dir,
+                                                       shared_lib_paths,
+                                                       num_experiments,
+                                                       instance_size,
+                                                       backend,
+                                                       llvm_opt_level_ir,
+                                                       llvm_opt_level_codegen);
+                    benchmark.run(ast);
+                }
             }
 #endif
         }

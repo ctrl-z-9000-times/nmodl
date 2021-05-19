@@ -4,10 +4,8 @@
 variables:
   # defined in UI
   #- ReleaseWheelBuild: False
-  #- NightlyWheelBuild: False
-- name: buildWheel
-  value: $[or(in(variables['Build.Reason'], 'Schedule'),
-              and(in(variables['Build.Reason'], 'Manual'), eq(variables.NightlyWheelBuild, True)))]
+  #- UploadWheel: False
+  buildWheel: ${{ or(in(variables['Build.Reason'], 'Schedule'), in(variables['Build.Reason'], 'Manual')) }}
 
 # Nightly build master for pypi upload
 schedules:
@@ -24,10 +22,10 @@ trigger:
 - releases/*
 
 jobs:
-- job: 'ubuntu1604'
+- job: 'ubuntu1804'
   pool:
-    vmImage: 'ubuntu-16.04'
-  displayName: 'Ubuntu (16.04), GCC 8.3'
+    vmImage: 'ubuntu-18.04'
+  displayName: 'Ubuntu (18.04), GCC 8.4'
   steps:
   - checkout: self
     submodules: False
@@ -35,20 +33,25 @@ jobs:
       sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
       sudo apt-add-repository -y ppa:deadsnakes/ppa
       sudo apt update
-      sudo apt install -y g++-8 flex bison
+      sudo apt install -y g++-8 flex bison libfl-dev cython libx11-dev libxcomposite-dev libncurses-dev
       sudo apt-get install -y python3.7 python3.7-dev python3.7-venv
       python3.7 -m pip install -U pip setuptools
-      python3.7 -m pip install --user 'Jinja2>=2.9.3' 'PyYAML>=3.13' pytest 'sympy>=1.3,<1.6'
+      python3.7 -m pip install --user 'Jinja2>=2.9.3' 'PyYAML>=3.13' pytest pytest-cov 'sympy>=1.3,<1.6' numpy
       # we manually get version 3.10.2 to make sure that changes in the cmake
-      # files do not require unsupported versions of cmake in our package. 
-      wget "https://github.com/Kitware/CMake/releases/download/v3.10.2/$CMAKE_PKG.tar.gz" && tar xzpvf $CMAKE_PKG.tar.gz
+      # files do not require unsupported versions of cmake in our package.
+      wget --quiet --output-document=- "https://github.com/Kitware/CMake/releases/download/v3.10.2/$CMAKE_PKG.tar.gz" | tar xzpf -
       # install ISPC compiler for integration testing
       ispc_version="v1.12.0";
       url_os="linux";
       ispc_version_suffix="b";
       url="https://github.com/ispc/ispc/releases/download/${ispc_version}/ispc-${ispc_version}${ispc_version_suffix}-${url_os}.tar.gz";
-      wget -O ispc.tar.gz $url;
-      mkdir $(pwd)/$CMAKE_PKG/ispc && tar -xvzf ispc.tar.gz -C $(pwd)/$CMAKE_PKG/ispc --strip 1;
+      mkdir $(pwd)/$CMAKE_PKG/ispc
+      wget --output-document=- $url | tar -xvzf - -C $(pwd)/$CMAKE_PKG/ispc --strip 1;
+      # install llvm nightly (future v13)
+      wget https://apt.llvm.org/llvm.sh
+      chmod +x llvm.sh
+      sudo ./llvm.sh 13
+
     env:
       CMAKE_PKG: 'cmake-3.10.2-Linux-x86_64'
     displayName: 'Install Dependencies'
@@ -58,11 +61,12 @@ jobs:
       mkdir -p $(Build.Repository.LocalPath)/build
       cd $(Build.Repository.LocalPath)/build
       cmake --version
-      cmake .. -DPYTHON_EXECUTABLE=$(which python3.7) -DCMAKE_INSTALL_PREFIX=$HOME/nmodl -DCMAKE_BUILD_TYPE=Release -DNMODL_ENABLE_LLVM=OFF
+      cmake .. -DPYTHON_EXECUTABLE=$(which python3.7) -DCMAKE_INSTALL_PREFIX=$HOME/nmodl -DCMAKE_BUILD_TYPE=Release -DNMODL_ENABLE_LLVM=ON -DLLVM_DIR=/usr/lib/llvm-13/share/llvm/cmake/
       make -j 2
       if [ $? -ne 0 ]
       then
         make VERBOSE=1
+        exit 1
       fi
       make install #this is needed for the integration tests
       env CTEST_OUTPUT_ON_FAILURE=1 make test
@@ -72,21 +76,27 @@ jobs:
   - script: |
       export PATH=$(pwd)/$CMAKE_PKG/bin:/home/vsts/.local/bin:$PATH
       export CXX='g++-8'
-      git clone --recursive https://github.com/BlueBrain/CoreNeuron.git
-      mkdir CoreNeuron/build
-      cd CoreNeuron/build
+      git clone --recursive --shallow-submodules https://github.com/neuronsimulator/nrn.git
+      mkdir nrn/build
+      cd nrn/build
       cmake --version
-      cmake .. -DCORENRN_ENABLE_MPI=OFF -DCORENRN_ENABLE_NMODL=ON -DCORENRN_NMODL_DIR=$HOME/nmodl -Dnmodl_PYTHONPATH=$HOME/nmodl/lib -DPYTHON_EXECUTABLE=$(which python3.7) -DCORENRN_NMODL_FLAGS="sympy --analytic"
+      cmake .. -DNRN_ENABLE_CORENEURON=ON -DNRN_ENABLE_INTERVIEWS=OFF -DNRN_ENABLE_RX3D=OFF -DNRN_ENABLE_BINARY_SPECIAL=ON -DNRN_ENABLE_MPI=OFF -DNRN_ENABLE_TESTS=ON -DCORENRN_ENABLE_MPI=OFF -DCORENRN_ENABLE_NMODL=ON -DCORENRN_NMODL_DIR=$HOME/nmodl -Dnmodl_PYTHONPATH=$HOME/nmodl/lib -DPYTHON_EXECUTABLE=$(which python3.7) -DCORENRN_NMODL_FLAGS="sympy --analytic"
       make -j 2
       if [ $? -ne 0 ]
       then
         make VERBOSE=1
+        exit 1
       fi
-      make test
+      ctest --output-on-failure
+      if [ $? -ne 0 ]
+      then
+        exit 1
+      fi
       ./bin/nrnivmodl-core $(Build.Repository.LocalPath)/test/integration/mod
     env:
       CMAKE_PKG: 'cmake-3.10.2-Linux-x86_64'
-    displayName: 'Build CoreNEURON and Run Integration Tests'
+      SHELL: 'bash'
+    displayName: 'Build Neuron and Run Integration Tests'
   - script: |
       export PATH=$(pwd)/$CMAKE_PKG/bin:/home/vsts/.local/bin:$PATH
       export CXX='g++-8'
@@ -99,36 +109,74 @@ jobs:
       if [ $? -ne 0 ]
       then
         make VERBOSE=1
+        exit 1
       fi
-      make test
+      ctest --output-on-failure
+      if [ $? -ne 0 ]
+      then
+        exit 1
+      fi
       ./bin/nrnivmodl-core $(Build.Repository.LocalPath)/test/integration/mod
     env:
       CMAKE_PKG: 'cmake-3.10.2-Linux-x86_64'
     displayName: 'Build CoreNEURON and Run Integration Tests with ISPC compiler'
-- job: 'osx1014'
+- job: 'osx1015'
   pool:
-    vmImage: 'macOS-10.14'
-  displayName: 'MacOS (10.14), AppleClang 10.0'
+    vmImage: 'macOS-10.15'
+  displayName: 'MacOS (10.15), AppleClang 11.0'
   steps:
   - checkout: self
     submodules: True
   - script: |
       brew install flex bison cmake python@3 llvm
       python3 -m pip install -U pip setuptools
-      python3 -m pip install --user 'Jinja2>=2.9.3' 'PyYAML>=3.13' pytest 'sympy>=1.3'
+      python3 -m pip install --user 'Jinja2>=2.9.3' 'PyYAML>=3.13' pytest pytest-cov numpy 'sympy>=1.3'
     displayName: 'Install Dependencies'
+  - script: |
+      cd $HOME
+      git clone https://github.com/pramodk/llvm-nightly.git
+    displayName: 'Setup LLVM v13'
   - script: |
       export PATH=/usr/local/opt/flex/bin:/usr/local/opt/bison/bin:$PATH;
       mkdir -p $(Build.Repository.LocalPath)/build
       cd $(Build.Repository.LocalPath)/build
-      cmake .. -DPYTHON_EXECUTABLE=$(which python3) -DCMAKE_INSTALL_PREFIX=$HOME/nmodl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNMODL_ENABLE_PYTHON_BINDINGS=OFF -DLLVM_DIR=`brew --prefix llvm`/lib/cmake/llvm -DNMODL_ENABLE_LLVM=ON
+      cmake .. -DPYTHON_EXECUTABLE=$(which python3) -DCMAKE_INSTALL_PREFIX=$HOME/nmodl -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNMODL_ENABLE_PYTHON_BINDINGS=OFF -DLLVM_DIR=$HOME/llvm-nightly/0421/osx/lib/cmake/llvm -DNMODL_ENABLE_LLVM=ON
       make -j 2
       if [ $? -ne 0 ]
       then
         make VERBOSE=1
+        exit 1
       fi
-      env CTEST_OUTPUT_ON_FAILURE=1 make test
+      ctest --output-on-failure
+      if [ $? -ne 0 ]
+      then
+        exit 1
+      fi
+      make install
     displayName: 'Build and Run Tests'
+  - script: |
+      export PATH=$(pwd)/$CMAKE_PKG/bin:/home/vsts/.local/bin:$PATH
+      export CXX='g++-8'
+      git clone --recursive --shallow-submodules https://github.com/neuronsimulator/nrn.git
+      mkdir nrn/build
+      cd nrn/build
+      cmake --version
+      cmake .. -DNRN_ENABLE_CORENEURON=ON -DNRN_ENABLE_INTERVIEWS=OFF -DNRN_ENABLE_RX3D=OFF -DNRN_ENABLE_BINARY_SPECIAL=ON -DNRN_ENABLE_MPI=OFF -DNRN_ENABLE_TESTS=ON -DCORENRN_ENABLE_MPI=OFF -DCORENRN_ENABLE_NMODL=ON -DCORENRN_NMODL_DIR=$HOME/nmodl -Dnmodl_PYTHONPATH=$HOME/nmodl/lib -DPYTHON_EXECUTABLE=$(which python3) -DCORENRN_NMODL_FLAGS="sympy --analytic"
+      make -j 2
+      if [ $? -ne 0 ]
+      then
+        make VERBOSE=1
+        exit 1
+      fi
+      ctest --output-on-failure
+      if [ $? -ne 0 ]
+      then
+        exit 1
+      fi
+      ./bin/nrnivmodl-core $(Build.Repository.LocalPath)/test/integration/mod
+    env:
+      SHELL: 'bash'
+    displayName: 'Build Neuron and Run Integration Tests'
 - job: 'manylinux_wheels'
   timeoutInMinutes: 45
   condition: eq(1,2)
@@ -136,20 +184,24 @@ jobs:
     vmImage: 'ubuntu-18.04'
   strategy:
     matrix:
-      Python36:
-        python.version: '3.6'
-      Python37:
-        python.version: '3.7'
-      Python38:
-        python.version: '3.8'
-      Python39:
-        python.version: '3.9'
+      ${{ if eq(variables.buildWheel, True) }}:
+        Python36:
+          python.version: '3.6'
+        Python37:
+          python.version: '3.7'
+        Python38:
+          python.version: '3.8'
+        Python39:
+          python.version: '3.9'
+      ${{ if eq(variables.buildWheel, False) }}:
+        Python39:
+          python.version: '3.9'
   steps:
   - checkout: self
     submodules: True
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
   - script: |
-      if [ "$(buildWheel)" == "True" ]; then
+      if [[ "$(RELEASEWHEELBUILD)" != "True" ]]; then
         export TAG="-nightly"
       else
         export TAG=""
@@ -160,19 +212,19 @@ jobs:
         -e NMODL_NIGHTLY_TAG=$TAG \
         'bluebrain/nmodl:wheel' \
         packaging/build_wheels.bash linux $(python.version)
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Building ManyLinux Wheel'
   - task: PublishBuildArtifacts@1
     inputs:
       pathToPublish: '$(Build.SourcesDirectory)/wheelhouse'
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Publish wheel as build artifact'
   - script: |
       sudo apt-add-repository -y ppa:deadsnakes/ppa
       sudo apt update
       sudo apt-get install -y python$(python.version) python$(python.version)-dev python$(python.version)-venv
       packaging/test_wheel.bash python$(python.version) wheelhouse/*.whl
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Test ManyLinux Wheel with Python $(python.version)'
   - template: ci/upload-wheels.yml
 - job: 'macos_wheels'
@@ -182,53 +234,58 @@ jobs:
     vmImage: 'macOS-10.15'
   strategy:
     matrix:
-      Python36:
-        python.version: '3.6'
-        python.org.version: '3.6.8'
-      Python37:
-        python.version: '3.7'
-        python.org.version: '3.7.7'
-      Python38:
-        python.version: '3.8'
-        python.org.version: '3.8.2'
-      Python39:
-        python.version: '3.9'
-        python.org.version: '3.9.0'
+      ${{ if eq(variables.buildWheel, True) }}:
+        Python36:
+          python.version: '3.6'
+          python.org.version: '3.6.8'
+        Python37:
+          python.version: '3.7'
+          python.org.version: '3.7.7'
+        Python38:
+          python.version: '3.8'
+          python.org.version: '3.8.2'
+        Python39:
+          python.version: '3.9'
+          python.org.version: '3.9.0'
+      ${{ if eq(variables.buildWheel, False) }}:
+        Python39:
+          python.version: '3.9'
+          python.org.version: '3.9.0'
   steps:
   - checkout: self
     submodules: True
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
   - script: |
       brew install flex bison cmake
       export PATH=/usr/local/opt/flex/bin:/usr/local/opt/bison/bin:$PATH;
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Install Dependencies'
   - script: |
       installer=python-$(python.org.version)-macosx10.9.pkg
       url=https://www.python.org/ftp/python/$(python.org.version)/$installer
       curl $url -o $installer
       sudo installer -pkg $installer -target /
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Install Python from python.org'
   - script: |
       export MACOSX_DEPLOYMENT_TARGET=10.9
       export PATH=/usr/local/opt/flex/bin:/usr/local/opt/bison/bin:$PATH
       export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-      if [ "$(buildWheel)" == "True" ]; then
+      if [[ "$(RELEASEWHEELBUILD)" != "True" ]]; then
         export NMODL_NIGHTLY_TAG="-nightly"
       else
         export NMODL_NIGHTLY_TAG=""
       fi
       packaging/build_wheels.bash osx $(python.version)
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Build macos Wheel'
   - task: PublishBuildArtifacts@1
     inputs:
       pathToPublish: '$(Build.SourcesDirectory)/wheelhouse'
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Publish wheel as build artifact'
   - script: |
       packaging/test_wheel.bash python$(python.version) wheelhouse/*.whl
-    condition: and(succeeded(), or(eq(variables.buildWheel, True), eq(variables['python.version'], '3.9')))
+    condition: succeeded()
     displayName: 'Test macos Wheel with Python $(python.version)'
   - template: ci/upload-wheels.yml

@@ -88,6 +88,7 @@ CodegenInstanceData CodegenDataHelper::create_data(size_t num_elements, size_t s
     // allocate instance object with memory alignment
     posix_memalign(&base, NBYTE_ALIGNMENT, member_size * variables.size());
     data.base_ptr = base;
+    data.num_bytes += member_size * variables.size();
 
     size_t offset = 0;
     void* ptr = base;
@@ -114,7 +115,15 @@ CodegenInstanceData CodegenDataHelper::create_data(size_t num_elements, size_t s
         // allocate memory and setup a pointer
         void* member;
         posix_memalign(&member, NBYTE_ALIGNMENT, member_size * num_elements);
-        initialize_variable(var, member, variable_index, num_elements);
+
+        // integer values are often offsets so they must start from
+        // 0 to num_elements-1 to avoid out of bound accesses.
+        int initial_value = variable_index;
+        if (type == ast::AstNodeType::INTEGER) {
+            initial_value = 0;
+        }
+        initialize_variable(var, member, initial_value, num_elements);
+        data.num_bytes += member_size * num_elements;
 
         // copy address at specific location in the struct
         memcpy(ptr, &member, sizeof(double*));

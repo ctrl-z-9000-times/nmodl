@@ -20,11 +20,14 @@
 
 #include "codegen/codegen_c_visitor.hpp"
 #include "codegen/llvm/codegen_llvm_helper_visitor.hpp"
+#include "codegen/llvm/llvm_debug_builder.hpp"
+#include "codegen/llvm/llvm_ir_builder.hpp"
 #include "symtab/symbol_table.hpp"
 #include "utils/logger.hpp"
 #include "visitors/ast_visitor.hpp"
 
-#include "llvm/IR/IRBuilder.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
@@ -46,78 +49,74 @@ namespace codegen {
  * @{
  */
 
+/// A map to query vector library by its string value.
+static const std::map<std::string, llvm::TargetLibraryInfoImpl::VectorLibrary> veclib_map = {
+    {"Accelerate", llvm::TargetLibraryInfoImpl::Accelerate},
+#ifndef LLVM_VERSION_LESS_THAN_13
+    {"libmvec", llvm::TargetLibraryInfoImpl::LIBMVEC_X86},
+#endif
+    {"MASSV", llvm::TargetLibraryInfoImpl::MASSV},
+    {"SVML", llvm::TargetLibraryInfoImpl::SVML},
+    {"none", llvm::TargetLibraryInfoImpl::NoLibrary}};
+
 /**
  * \class CodegenLLVMVisitor
  * \brief %Visitor for transforming NMODL AST to LLVM IR
  */
 class CodegenLLVMVisitor: public CodegenCVisitor {
-    // Name of mod file (without .mod suffix)
+    /// Name of mod file (without .mod suffix).
     std::string mod_filename;
 
-    // Output directory for code generation
+    /// Output directory for code generation.
     std::string output_dir;
 
     /// flag to indicate if visitor should print the the wrapper code
     bool wrapper_codegen = false;
 
   private:
-    InstanceVarHelper instance_var_helper;
-
+    /// Underlying LLVM context.
     std::unique_ptr<llvm::LLVMContext> context = std::make_unique<llvm::LLVMContext>();
 
+    /// Underlying LLVM module.
     std::unique_ptr<llvm::Module> module = std::make_unique<llvm::Module>(mod_filename, *context);
 
-    llvm::IRBuilder<> builder;
+    /// LLVM IR builder.
+    IRBuilder ir_builder;
 
-    llvm::legacy::FunctionPassManager fpm;
+    /// Debug information builder.
+    DebugBuilder debug_builder;
 
-    // Stack to hold visited values
-    std::vector<llvm::Value*> values;
+    /// Add debug information to the module.
+    bool add_debug_information;
 
-    // Pointer to the current function.
-    llvm::Function* current_func = nullptr;
+    /// Instance variable helper.
+    InstanceVarHelper instance_var_helper;
 
-    // Run optimisation passes if true.
+    /// Run optimisation passes if true.
     bool opt_passes;
 
-    // Use 32-bit floating-point type if true. Otherwise, use deafult 64-bit.
-    bool use_single_precision;
+    /// Pass manager for optimisation passes that are run on IR and are not related to target.
+    llvm::legacy::FunctionPassManager opt_pm;
 
-    // Explicit vectorisation width.
+    /// Pass manager for optimisation passes that are used for target code generation.
+    llvm::legacy::FunctionPassManager codegen_pm;
+
+    /// Vector library used for maths functions.
+    llvm::TargetLibraryInfoImpl::VectorLibrary vector_library;
+
+    /// Explicit vectorisation width.
     int vector_width;
 
-    // The name of induction variable used in the kernel functions.
-    std::string kernel_id;
-
-    // A flag to indicate that the code is generated for the kernel.
-    bool is_kernel_code = false;
-
-    // Name of the instance struct type of the mechanism
-    std::string mechanism_instance_struct_type_name;
-
-    /**
-     *\brief Run LLVM optimisation passes on generated IR
-     *
-     * LLVM provides number of optimisation passes that can be run on the generated IR.
-     * Here we run common optimisation LLVM passes that benefits code optimisation.
-     */
-    void run_llvm_opt_passes();
-
   public:
-    /**
-     * \brief Constructs the LLVM code generator visitor
-     *
-     * This constructor instantiates an NMODL LLVM code generator. This is
-     * just template to work with initial implementation.
-     */
     CodegenLLVMVisitor(const std::string& mod_filename,
                        const std::string& output_dir,
                        bool opt_passes,
                        bool use_single_precision = false,
-                       int vector_width = 1)
+                       int vector_width = 1,
+                       std::string vec_lib = "none",
+                       bool add_debug_information = false)
         : CodegenCVisitor(mod_filename,
                           output_dir,
-                          codegen::LayoutType::soa,
                           use_single_precision ? "float" : "double",
                           false,
                           ".ll",
@@ -125,190 +124,54 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
         , mod_filename(mod_filename)
         , output_dir(output_dir)
         , opt_passes(opt_passes)
-        , use_single_precision(use_single_precision)
         , vector_width(vector_width)
-        , builder(*context)
-        , fpm(module.get()) {}
+        , vector_library(veclib_map.at(vec_lib))
+        , add_debug_information(add_debug_information)
+        , ir_builder(*context, use_single_precision, vector_width)
+        , debug_builder(*module)
+        , codegen_pm(module.get())
+        , opt_pm(module.get()) {}
 
+    /// Dumps the generated LLVM IR module to string.
+    std::string dump_module() const {
+        std::string str;
+        llvm::raw_string_ostream os(str);
+        os << *module;
+        os.flush();
+        return str;
+    }
 
-    /**
-     * Generates LLVM code for the given IndexedName
-     * \param node IndexedName NMODL AST node
-     * \return LLVM code generated for this AST node
-     */
-    llvm::Value* codegen_indexed_name(const ast::IndexedName& node);
+    void print_target_file() const {
+        target_printer->add_multi_line(dump_module());
+    }
 
-    /**
-     * Generates LLVM code for the given Instance variable
-     * \param node CodegenInstanceVar NMODL AST node
-     * \return LLVM code generated for this AST node
-     */
-    llvm::Value* codegen_instance_var(const ast::CodegenInstanceVar& node);
+    /// Fills the container with the names of kernel functions from the MOD file.
+    void find_kernel_names(std::vector<std::string>& container);
 
-    /**
-     * Returns GEP instruction to 1D array
-     * \param name 1D array name
-     * \param index element index
-     * \return GEP instruction value
-     */
-    llvm::Value* create_gep(const std::string& name, llvm::Value* index);
-
-    /**
-     * Returns array index from given IndexedName
-     * \param node IndexedName representing array
-     * \return array index
-     */
-    llvm::Value* get_array_index(const ast::IndexedName& node);
-
-    /**
-     * Returns array length from given IndexedName
-     * \param node IndexedName representing array
-     * \return array length
-     */
-    int get_array_length(const ast::IndexedName& node);
-
-    /**
-     * Returns LLVM type for the given CodegenVarType node
-     * \param node CodegenVarType
-     * \return LLVM type
-     */
-    llvm::Type* get_codegen_var_type(const ast::CodegenVarType& node);
-
-    /**
-     * Returns LLVM vector with `vector_width` int values.
-     * \param int value to replicate
-     * \return LLVM value
-     */
-    llvm::Value* get_constant_int_vector(int value);
-
-    /**
-     * Returns LLVM vector with `vector_width` double values.
-     * \param string a double value to replicate
-     * \return LLVM value
-     */
-    llvm::Value* get_constant_fp_vector(const std::string& value);
-
-    /**
-     * Returns 64-bit or 32-bit LLVM floating type
-     * \return     \c LLVM floating point type according to `use_single_precision` flag
-     */
-    llvm::Type* get_default_fp_type();
-
-    /**
-     * Returns pointer to 64-bit or 32-bit LLVM floating type
-     * \return     \c LLVM pointer to floating point type according to `use_single_precision` flag
-     */
-    llvm::Type* get_default_fp_ptr_type();
-
-    /**
-     * Returns a pointer to LLVM struct type
-     * \return LLVM pointer type
-     */
-    llvm::Type* get_instance_struct_type();
-
-    /**
-     * Returns a LLVM value corresponding to the VarName node
-     * \return LLVM value
-     */
-    llvm::Value* get_variable_ptr(const ast::VarName& node);
-
-    /**
-     * Returns shared_ptr to generated ast::InstanceStruct
-     * \return std::shared_ptr<ast::InstanceStruct>
-     */
-    std::shared_ptr<ast::InstanceStruct> get_instance_struct_ptr();
-
-    /**
-     * Create a function call to an external method
-     * \param name external method name
-     * \param arguments expressions passed as arguments to the given external method
-     */
-    void create_external_method_call(const std::string& name,
-                                     const ast::ExpressionVector& arguments);
-
-    /**
-     * Create a function call to NMODL function or procedure in the same mod file
-     * \param func LLVM function corresponding ti this call
-     * \param name function name
-     * \param arguments expressions passed as arguments to the function call
-     */
-    void create_function_call(llvm::Function* func,
-                              const std::string& name,
-                              const ast::ExpressionVector& arguments);
-    /**
-     * Create a function call to printf function
-     * \param arguments expressions passed as arguments to the printf call
-     */
-    void create_printf_call(const ast::ExpressionVector& arguments);
-
-    /**
-     * Emit function or procedure declaration in LLVM given the node
-     *
-     * \param node the AST node representing the function or procedure in NMODL
-     */
-    void emit_procedure_or_function_declaration(const ast::CodegenFunction& node);
-
-    /**
-     * Return module pointer
-     * \return LLVM IR module pointer
-     */
+    /// Returns underlying module.
     std::unique_ptr<llvm::Module> get_module() {
         return std::move(module);
     }
 
-    /**
-     * Lookup the given name in the current function's symbol table
-     * \return LLVM value
-     */
-    llvm::Value* lookup(const std::string& name);
+    /// Returns shared_ptr to generated ast::InstanceStruct.
+    std::shared_ptr<ast::InstanceStruct> get_instance_struct_ptr() {
+        return instance_var_helper.instance;
+    }
 
-    /**
-     * Fills values vector with processed NMODL function call arguments
-     * \param arguments expression vector
-     * \param arg_values vector of LLVM IR values to fill
-     */
-    void pack_function_call_arguments(const ast::ExpressionVector& arguments,
-                                      std::vector<llvm::Value*>& arg_values);
+    /// Returns InstanceVarHelper for the given MOD file.
+    InstanceVarHelper get_instance_var_helper() {
+        return instance_var_helper;
+    }
 
-    /**
-     * Visit nmodl arithmetic binary operator
-     * \param lhs LLVM value of evaluated lhs expression
-     * \param rhs LLVM value of evaluated rhs expression
-     * \param op the AST binary operator (ADD, DIV, MUL, SUB)
-     * \return LLVM IR value result
-     */
-    llvm::Value* visit_arithmetic_bin_op(llvm::Value* lhs, llvm::Value* rhs, unsigned op);
+    /// Returns vector width
+    int get_vector_width() const {
+        return vector_width;
+    }
 
-    /**
-     * Visit nmodl assignment operator (ASSIGN)
-     * \param node the AST node representing the binary expression in NMODL
-     * \param rhs LLVM value of evaluated rhs expression
-     */
-    void visit_assign_op(const ast::BinaryExpression& node, llvm::Value* rhs);
-
-    /**
-     * Visit nmodl logical binary operator
-     * \param lhs LLVM value of evaluated lhs expression
-     * \param rhs LLVM value of evaluated rhs expression
-     * \param op the AST binary operator (AND, OR)
-     * \return LLVM IR value result
-     */
-    llvm::Value* visit_logical_bin_op(llvm::Value* lhs, llvm::Value* rhs, unsigned op);
-
-    /**
-     * Visit nmodl comparison binary operator
-     * \param lhs LLVM value of evaluated lhs expression
-     * \param rhs LLVM value of evaluated rhs expression
-     * \param op the AST binary operator (EXACT_EQUAL, GREATER, GREATER_EQUAL, LESS, LESS_EQUAL,
-     * NOT_EQUAL) \return LLVM IR value result
-     */
-    llvm::Value* visit_comparison_bin_op(llvm::Value* lhs, llvm::Value* rhs, unsigned op);
-
-
-    // Visitors
+    // Visitors.
     void visit_binary_expression(const ast::BinaryExpression& node) override;
     void visit_boolean(const ast::Boolean& node) override;
-    void visit_statement_block(const ast::StatementBlock& node) override;
+    void visit_codegen_atomic_statement(const ast::CodegenAtomicStatement& node) override;
     void visit_codegen_for_statement(const ast::CodegenForStatement& node) override;
     void visit_codegen_function(const ast::CodegenFunction& node) override;
     void visit_codegen_return_statement(const ast::CodegenReturnStatement& node) override;
@@ -320,6 +183,7 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     void visit_integer(const ast::Integer& node) override;
     void visit_procedure_block(const ast::ProcedureBlock& node) override;
     void visit_program(const ast::Program& node) override;
+    void visit_statement_block(const ast::StatementBlock& node) override;
     void visit_unary_expression(const ast::UnaryExpression& node) override;
     void visit_var_name(const ast::VarName& node) override;
     void visit_while_statement(const ast::WhileStatement& node) override;
@@ -389,18 +253,6 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
         visitor::ConstAstVisitor::visit_for_netcon(node);
     }
 
-    std::string print_module() const {
-        std::string str;
-        llvm::raw_string_ostream os(str);
-        os << *module;
-        os.flush();
-        return str;
-    }
-
-    void print_target_file() const {
-        target_printer->add_multi_line(print_module());
-    }
-
     /*
      * Functions related to printing the wrapper cpp file
      */
@@ -430,6 +282,63 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
      * The first argument should be an object of \c mechanism_instance_struct_type_name
      */
     CodegenLLVMVisitor::ParamVector get_compute_function_parameter();
+    /// Wraps all kernel function calls into wrapper functions that use `void*` to pass the data to
+    /// the kernel.
+    void wrap_kernel_functions();
+
+  private:
+    /// Accepts the given AST node and returns the processed value.
+    llvm::Value* accept_and_get(const std::shared_ptr<ast::Node>& node);
+
+    /// Creates a call to an external function (e.g pow, exp, etc.)
+    void create_external_function_call(const std::string& name,
+                                       const ast::ExpressionVector& arguments);
+
+    /// Creates a call to NMODL function or procedure in the same MOD file.
+    void create_function_call(llvm::Function* func,
+                              const std::string& name,
+                              const ast::ExpressionVector& arguments);
+
+    /// Fills values vector with processed NMODL function call arguments.
+    void create_function_call_arguments(const ast::ExpressionVector& arguments,
+                                        ValueVector& arg_values);
+
+    /// Creates the function declaration for the given AST node.
+    void create_function_declaration(const ast::CodegenFunction& node);
+
+    /// Creates a call to `printf` function.
+    void create_printf_call(const ast::ExpressionVector& arguments);
+
+    /// Returns LLVM type for the given CodegenVarType AST node.
+    llvm::Type* get_codegen_var_type(const ast::CodegenVarType& node);
+
+    /// Returns the index value from the IndexedName AST node.
+    llvm::Value* get_index(const ast::IndexedName& node);
+
+    /// Returns an instance struct type.
+    llvm::Type* get_instance_struct_type();
+
+    /// Returns the number of elements in the array specified by the IndexedName AST node.
+    int get_num_elements(const ast::IndexedName& node);
+
+    /// Returns whether the function is an NMODL compute kernel.
+    bool is_kernel_function(const std::string& function_name);
+
+    /// If the value to store is specified, writes it to the instance. Otherwise, returns the
+    /// instance variable.
+    llvm::Value* read_from_or_write_to_instance(const ast::CodegenInstanceVar& node,
+                                                llvm::Value* maybe_value_to_store = nullptr);
+
+    /// Reads the given variable and returns the processed value.
+    llvm::Value* read_variable(const ast::VarName& node);
+
+
+    /// Run multiple LLVM optimisation passes on generated IR.
+    /// TODO: this can be moved to a dedicated file or deprecated.
+    void run_ir_opt_passes();
+
+    //// Writes the value to the given variable.
+    void write_to_variable(const ast::VarName& node, llvm::Value* value);
 };
 
 /** \} */  // end of llvm_backends

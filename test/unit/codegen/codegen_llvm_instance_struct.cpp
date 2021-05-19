@@ -45,7 +45,7 @@ codegen::CodegenInstanceData generate_instance_data(const std::string& text,
                                              use_single_precision,
                                              vector_width);
     llvm_visitor.visit_program(*ast);
-    llvm_visitor.print_module();
+    llvm_visitor.dump_module();
     const auto& generated_instance_struct = llvm_visitor.get_instance_struct_ptr();
     auto codegen_data = codegen::CodegenDataHelper(ast, generated_instance_struct);
     auto instance_data = codegen_data.create_data(num_elements, seed);
@@ -132,8 +132,12 @@ SCENARIO("Instance Struct creation", "[visitor][llvm][instance_struct]") {
                             generate_dummy_data<double>(ena_index, num_elements)));
             REQUIRE(compare(instance_data.members[ion_ena_index],
                             generate_dummy_data<double>(ion_ena_index, num_elements)));
+            // index variables are offsets, they start from 0
+            REQUIRE(compare(instance_data.members[ion_ena_index_index],
+                            generate_dummy_data<int>(0, num_elements)));
             REQUIRE(compare(instance_data.members[node_index_index],
-                            generate_dummy_data<int>(node_index_index, num_elements)));
+                            generate_dummy_data<int>(0, num_elements)));
+
             REQUIRE(*static_cast<double*>(instance_data.members[t_index]) ==
                     default_nthread_t_value);
             REQUIRE(*static_cast<int*>(instance_data.members[node_count_index]) == num_elements);
@@ -164,8 +168,7 @@ SCENARIO("Instance Struct creation", "[visitor][llvm][instance_struct]") {
             REQUIRE(compare(instance->ena, generate_dummy_data<double>(ena_index, num_elements)));
             REQUIRE(compare(instance->ion_ena,
                             generate_dummy_data<double>(ion_ena_index, num_elements)));
-            REQUIRE(compare(instance->node_index,
-                            generate_dummy_data<int>(node_index_index, num_elements)));
+            REQUIRE(compare(instance->node_index, generate_dummy_data<int>(0, num_elements)));
             REQUIRE(instance->t == default_nthread_t_value);
             REQUIRE(instance->celsius == default_celsius_value);
             REQUIRE(instance->secondorder == default_second_order_value);

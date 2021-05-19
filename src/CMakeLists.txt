@@ -1,3 +1,14 @@
+add_subdirectory(codegen)
+add_subdirectory(language)
+add_subdirectory(lexer)
+add_subdirectory(parser)
+add_subdirectory(printer)
+add_subdirectory(symtab)
+add_subdirectory(utils)
+add_subdirectory(visitors)
+add_subdirectory(pybind)
+add_subdirectory(solver)
+
 # =============================================================================
 # NMODL sources
 # =============================================================================
@@ -17,9 +28,8 @@ target_link_libraries(
   util
   lexer
   ${NMODL_WRAPPER_LIBS})
-
 if(NMODL_ENABLE_LLVM)
-  target_link_libraries(nmodl llvm_codegen ${LLVM_LIBS_TO_LINK})
+  target_link_libraries(nmodl llvm_codegen llvm_benchmark benchmark_data ${LLVM_LIBS_TO_LINK})
 endif()
 
 # =============================================================================

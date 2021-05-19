@@ -8,16 +8,25 @@
 #include <catch/catch.hpp>
 #include <regex>
 
+#include "test/unit/utils/test_utils.hpp"
+
 #include "ast/program.hpp"
+#include "ast/statement_block.hpp"
+#include "codegen/llvm/codegen_llvm_helper_visitor.hpp"
 #include "codegen/llvm/codegen_llvm_visitor.hpp"
 #include "parser/nmodl_driver.hpp"
 #include "visitors/checkparent_visitor.hpp"
 #include "visitors/neuron_solve_visitor.hpp"
 #include "visitors/solve_block_visitor.hpp"
 #include "visitors/symtab_visitor.hpp"
+#include "visitors/visitor_utils.hpp"
 
 using namespace nmodl;
+using namespace codegen;
 using namespace visitor;
+
+using namespace test_utils;
+
 using nmodl::parser::NmodlDriver;
 
 //=============================================================================
@@ -27,7 +36,8 @@ using nmodl::parser::NmodlDriver;
 std::string run_llvm_visitor(const std::string& text,
                              bool opt = false,
                              bool use_single_precision = false,
-                             int vector_width = 1) {
+                             int vector_width = 1,
+                             std::string vec_lib = "none") {
     NmodlDriver driver;
     const auto& ast = driver.parse_string(text);
 
@@ -39,9 +49,30 @@ std::string run_llvm_visitor(const std::string& text,
                                              /*output_dir=*/".",
                                              opt,
                                              use_single_precision,
-                                             vector_width);
+                                             vector_width,
+                                             vec_lib);
     llvm_visitor.visit_program(*ast);
-    return llvm_visitor.print_module();
+    return llvm_visitor.dump_module();
+}
+
+//=============================================================================
+// Utility to get specific NMODL AST nodes
+//=============================================================================
+
+std::vector<std::shared_ptr<ast::Ast>> run_llvm_visitor_helper(
+    const std::string& text,
+    int vector_width,
+    const std::vector<ast::AstNodeType>& nodes_to_collect) {
+    NmodlDriver driver;
+    const auto& ast = driver.parse_string(text);
+
+    SymtabVisitor().visit_program(*ast);
+    SolveBlockVisitor().visit_program(*ast);
+    CodegenLLVMHelperVisitor(vector_width).visit_program(*ast);
+
+    const auto& nodes = collect_nodes(*ast, nodes_to_collect);
+
+    return nodes;
 }
 
 //=============================================================================
@@ -659,6 +690,7 @@ SCENARIO("Procedure", "[visitor][llvm]") {
             REQUIRE(std::regex_search(module_string, m, signature));
             REQUIRE(std::regex_search(module_string, m, alloc));
             REQUIRE(std::regex_search(module_string, m, store));
+            REQUIRE(std::regex_search(module_string, m, load));
             REQUIRE(std::regex_search(module_string, m, ret));
         }
     }
@@ -806,19 +838,27 @@ SCENARIO("Scalar state kernel", "[visitor][llvm]") {
             std::string module_string = run_llvm_visitor(nmodl_text);
             std::smatch m;
 
-            // Check the struct type and the kernel declaration.
+            // Check the struct type with correct attributes and the kernel declaration.
             std::regex struct_type(
                 "%.*__instance_var__type = type \\{ double\\*, double\\*, double\\*, double\\*, "
                 "double\\*, double\\*, double\\*, i32\\*, double, double, double, i32, i32 \\}");
             std::regex kernel_declaration(
-                R"(define void @nrn_state_hh\(%.*__instance_var__type\* .*\))");
+                R"(define void @nrn_state_hh\(%.*__instance_var__type\* noalias nocapture readonly .*\) #0)");
             REQUIRE(std::regex_search(module_string, m, struct_type));
             REQUIRE(std::regex_search(module_string, m, kernel_declaration));
 
-            // Check for correct induction variable initialisation and a branch to condition block.
-            std::regex alloca_instr(R"(%id = alloca i32)");
+            // Check kernel attributes.
+            std::regex kernel_attributes(R"(attributes #0 = \{ nofree nounwind \})");
+            REQUIRE(std::regex_search(module_string, m, kernel_attributes));
+
+            // Check for correct variables initialisation and a branch to condition block.
+            std::regex id_initialisation(R"(%id = alloca i32)");
+            std::regex node_id_initialisation(R"(%node_id = alloca i32)");
+            std::regex v_initialisation(R"(%v = alloca double)");
             std::regex br(R"(br label %for\.cond)");
-            REQUIRE(std::regex_search(module_string, m, alloca_instr));
+            REQUIRE(std::regex_search(module_string, m, id_initialisation));
+            REQUIRE(std::regex_search(module_string, m, node_id_initialisation));
+            REQUIRE(std::regex_search(module_string, m, v_initialisation));
             REQUIRE(std::regex_search(module_string, m, br));
 
             // Check condition block: id < mech->node_count, and a conditional branch to loop body
@@ -835,12 +875,16 @@ SCENARIO("Scalar state kernel", "[visitor][llvm]") {
             REQUIRE(std::regex_search(module_string, m, condition));
             REQUIRE(std::regex_search(module_string, m, cond_br));
 
-            // In the body block, `node_id` and voltage `v` are initialised with the data from the
-            // struct. Check for variable allocations and correct loads from the struct with GEPs.
-            std::regex initialisation(
-                "for\\.body:.*\n"
-                "  %node_id = alloca i32,.*\n"
-                "  %v = alloca double,.*");
+            // Check that loop metadata is attached to the scalar kernel.
+            std::regex loop_metadata(R"(!llvm\.loop !0)");
+            std::regex loop_metadata_self_reference(R"(!0 = distinct !\{!0, !1\})");
+            std::regex loop_metadata_disable_vectorization(
+                R"(!1 = !\{!\"llvm\.loop\.vectorize\.enable\", i1 false\})");
+            REQUIRE(std::regex_search(module_string, m, loop_metadata));
+            REQUIRE(std::regex_search(module_string, m, loop_metadata_self_reference));
+            REQUIRE(std::regex_search(module_string, m, loop_metadata_disable_vectorization));
+
+            // Check for correct loads from the struct with GEPs.
             std::regex load_from_struct(
                 "  %.* = load %.*__instance_var__type\\*, %.*__instance_var__type\\*\\* %.*\n"
                 "  %.* = getelementptr inbounds %.*__instance_var__type, "
@@ -850,7 +894,6 @@ SCENARIO("Scalar state kernel", "[visitor][llvm]") {
                 "  %.* = load (i32|double)\\*, (i32|double)\\*\\* %.*\n"
                 "  %.* = getelementptr inbounds (i32|double), (i32|double)\\* %.*, i64 %.*\n"
                 "  %.* = load (i32|double), (i32|double)\\* %.*");
-            REQUIRE(std::regex_search(module_string, m, initialisation));
             REQUIRE(std::regex_search(module_string, m, load_from_struct));
 
             // Check induction variable is incremented in increment block.
@@ -864,9 +907,309 @@ SCENARIO("Scalar state kernel", "[visitor][llvm]") {
 
             // Check exit block.
             std::regex exit(
-                "for\\.exit:.*\n"
+                "for\\.exit[0-9]*:.*\n"
                 "  ret void");
             REQUIRE(std::regex_search(module_string, m, exit));
+        }
+    }
+}
+
+//=============================================================================
+// Gather for vectorised kernel
+//=============================================================================
+
+SCENARIO("Vectorised simple kernel", "[visitor][llvm]") {
+    GIVEN("An indirect indexing of voltage") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX hh
+                NONSPECIFIC_CURRENT i
+            }
+
+            STATE {}
+
+            ASSIGNED {
+                v (mV)
+            }
+
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+                i = 2
+            }
+
+            DERIVATIVE states {}
+        )";
+
+        THEN("a gather instructions is created") {
+            std::string module_string = run_llvm_visitor(nmodl_text,
+                                                         /*opt=*/false,
+                                                         /*use_single_precision=*/false,
+                                                         /*vector_width=*/4);
+            std::smatch m;
+
+            // Check that no loop metadata is attached.
+            std::regex loop_metadata(R"(!llvm\.loop !.*)");
+            REQUIRE(!std::regex_search(module_string, m, loop_metadata));
+
+            // Check gather intrinsic is correctly declared.
+            std::regex declaration(
+                R"(declare <4 x double> @llvm\.masked\.gather\.v4f64\.v4p0f64\(<4 x double\*>, i32 immarg, <4 x i1>, <4 x double>\) )");
+            REQUIRE(std::regex_search(module_string, m, declaration));
+
+            // Check that the indices vector is created correctly and extended to i64.
+            std::regex index_load(R"(load <4 x i32>, <4 x i32>\* %node_id)");
+            std::regex sext(R"(sext <4 x i32> %.* to <4 x i64>)");
+            REQUIRE(std::regex_search(module_string, m, index_load));
+            REQUIRE(std::regex_search(module_string, m, sext));
+
+            // Check that the access to `voltage` is performed via gather instruction.
+            //      v = mech->voltage[node_id]
+            std::regex gather(
+                "call <4 x double> @llvm\\.masked\\.gather\\.v4f64\\.v4p0f64\\("
+                "<4 x double\\*> %.*, i32 1, <4 x i1> <i1 true, i1 true, i1 true, i1 true>, <4 x "
+                "double> undef\\)");
+            REQUIRE(std::regex_search(module_string, m, gather));
+        }
+    }
+}
+
+//=============================================================================
+// Scatter for vectorised kernel
+//=============================================================================
+
+SCENARIO("Vectorised simple kernel with ion writes", "[visitor][llvm]") {
+    GIVEN("An indirect indexing of ca ion") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX hh
+                USEION ca WRITE cai
+            }
+
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+            }
+
+            DERIVATIVE states {}
+        )";
+
+        THEN("a scatter instructions is created") {
+            std::string module_string = run_llvm_visitor(nmodl_text,
+                                                         /*opt=*/false,
+                                                         /*use_single_precision=*/false,
+                                                         /*vector_width=*/4);
+            std::smatch m;
+
+            // Check scatter intrinsic is correctly declared.
+            std::regex declaration(
+                R"(declare void @llvm\.masked\.scatter\.v4f64\.v4p0f64\(<4 x double>, <4 x double\*>, i32 immarg, <4 x i1>\))");
+            REQUIRE(std::regex_search(module_string, m, declaration));
+
+            // Check that the indices vector is created correctly and extended to i64.
+            std::regex index_load(R"(load <4 x i32>, <4 x i32>\* %ion_cai_id)");
+            std::regex sext(R"(sext <4 x i32> %.* to <4 x i64>)");
+            REQUIRE(std::regex_search(module_string, m, index_load));
+            REQUIRE(std::regex_search(module_string, m, sext));
+
+            // Check that store to `ion_cai` is performed via scatter instruction.
+            //      ion_cai[ion_cai_id] = cai[id]
+            std::regex scatter(
+                "call void @llvm\\.masked\\.scatter\\.v4f64\\.v4p0f64\\(<4 x double> %.*, <4 x "
+                "double\\*> %.*, i32 1, <4 x i1> <i1 true, i1 true, i1 true, i1 true>\\)");
+            REQUIRE(std::regex_search(module_string, m, scatter));
+        }
+    }
+}
+
+//=============================================================================
+// Derivative block : test optimization
+//=============================================================================
+
+SCENARIO("Scalar derivative block", "[visitor][llvm][derivative]") {
+    GIVEN("After LLVM helper visitor transformations") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX hh
+                NONSPECIFIC_CURRENT il
+                RANGE minf, mtau
+            }
+            STATE {
+                m
+            }
+            ASSIGNED {
+                v (mV)
+                minf
+                mtau (ms)
+            }
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+                il = 2
+            }
+            DERIVATIVE states {
+                m = (minf-m)/mtau
+            }
+        )";
+
+        std::string expected_loop = R"(
+            for(id = 0; id<mech->node_count; id = id+1) {
+                node_id = mech->node_index[id]
+                v = mech->voltage[node_id]
+                mech->m[id] = (mech->minf[id]-mech->m[id])/mech->mtau[id]
+            })";
+
+        THEN("a single scalar loops is constructed") {
+            auto result = run_llvm_visitor_helper(nmodl_text,
+                                                  /*vector_width=*/1,
+                                                  {ast::AstNodeType::CODEGEN_FOR_STATEMENT});
+            REQUIRE(result.size() == 1);
+
+            auto main_loop = reindent_text(to_nmodl(result[0]));
+            REQUIRE(main_loop == reindent_text(expected_loop));
+        }
+    }
+}
+
+SCENARIO("Vectorised derivative block", "[visitor][llvm][derivative]") {
+    GIVEN("After LLVM helper visitor transformations") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX hh
+                NONSPECIFIC_CURRENT il
+                RANGE minf, mtau
+            }
+            STATE {
+                m
+            }
+            ASSIGNED {
+                v (mV)
+                minf
+                mtau (ms)
+            }
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+                il = 2
+            }
+            DERIVATIVE states {
+                m = (minf-m)/mtau
+            }
+        )";
+
+        std::string expected_main_loop = R"(
+            for(id = 0; id<mech->node_count-7; id = id+8) {
+                node_id = mech->node_index[id]
+                v = mech->voltage[node_id]
+                mech->m[id] = (mech->minf[id]-mech->m[id])/mech->mtau[id]
+            })";
+        std::string expected_epilogue_loop = R"(
+            for(; id<mech->node_count; id = id+1) {
+                epilogue_node_id = mech->node_index[id]
+                epilogue_v = mech->voltage[epilogue_node_id]
+                mech->m[id] = (mech->minf[id]-mech->m[id])/mech->mtau[id]
+            })";
+
+
+        THEN("vector and epilogue scalar loops are constructed") {
+            auto result = run_llvm_visitor_helper(nmodl_text,
+                                                  /*vector_width=*/8,
+                                                  {ast::AstNodeType::CODEGEN_FOR_STATEMENT});
+            REQUIRE(result.size() == 2);
+
+            auto main_loop = reindent_text(to_nmodl(result[0]));
+            REQUIRE(main_loop == reindent_text(expected_main_loop));
+
+            auto epilogue_loop = reindent_text(to_nmodl(result[1]));
+            REQUIRE(epilogue_loop == reindent_text(expected_epilogue_loop));
+        }
+    }
+}
+
+//=============================================================================
+// Vector library calls.
+//=============================================================================
+
+SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
+    GIVEN("A vector LLVM intrinsic") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX hh
+                NONSPECIFIC_CURRENT il
+            }
+            STATE {
+                m
+            }
+            ASSIGNED {
+                v (mV)
+            }
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+                il = 2
+            }
+            DERIVATIVE states {
+                m = exp(m)
+            }
+        )";
+
+        THEN("it is replaced with an appropriate vector library call") {
+            std::smatch m;
+
+            // Check exponential intrinsic is created.
+            std::string no_library_module_str = run_llvm_visitor(nmodl_text,
+                                                                 /*opt=*/false,
+                                                                 /*use_single_precision=*/false,
+                                                                 /*vector_width=*/2);
+            std::regex exp_decl(R"(declare <2 x double> @llvm\.exp\.v2f64\(<2 x double>\))");
+            std::regex exp_call(R"(call <2 x double> @llvm\.exp\.v2f64\(<2 x double> .*\))");
+            REQUIRE(std::regex_search(no_library_module_str, m, exp_decl));
+            REQUIRE(std::regex_search(no_library_module_str, m, exp_call));
+
+#ifndef LLVM_VERSION_LESS_THAN_13
+            // Check exponential calls are replaced with calls to SVML library.
+            std::string svml_library_module_str = run_llvm_visitor(nmodl_text,
+                                                                   /*opt=*/false,
+                                                                   /*use_single_precision=*/false,
+                                                                   /*vector_width=*/2,
+                                                                   /*vec_lib=*/"SVML");
+            std::regex svml_exp_decl(R"(declare <2 x double> @__svml_exp2\(<2 x double>\))");
+            std::regex svml_exp_call(R"(call <2 x double> @__svml_exp2\(<2 x double> .*\))");
+            REQUIRE(std::regex_search(svml_library_module_str, m, svml_exp_decl));
+            REQUIRE(std::regex_search(svml_library_module_str, m, svml_exp_call));
+            REQUIRE(!std::regex_search(svml_library_module_str, m, exp_call));
+
+            // Check that supported exponential calls are replaced with calls to MASSV library (i.e.
+            // operating on vector of width 2).
+            std::string massv2_library_module_str = run_llvm_visitor(nmodl_text,
+                                                                     /*opt=*/false,
+                                                                     /*use_single_precision=*/false,
+                                                                     /*vector_width=*/2,
+                                                                     /*vec_lib=*/"MASSV");
+            std::regex massv2_exp_decl(R"(declare <2 x double> @__expd2_P8\(<2 x double>\))");
+            std::regex massv2_exp_call(R"(call <2 x double> @__expd2_P8\(<2 x double> .*\))");
+            REQUIRE(std::regex_search(massv2_library_module_str, m, massv2_exp_decl));
+            REQUIRE(std::regex_search(massv2_library_module_str, m, massv2_exp_call));
+            REQUIRE(!std::regex_search(massv2_library_module_str, m, exp_call));
+
+            // Check no replacement for MASSV happens for non-supported vector widths.
+            std::string massv4_library_module_str = run_llvm_visitor(nmodl_text,
+                                                                     /*opt=*/false,
+                                                                     /*use_single_precision=*/false,
+                                                                     /*vector_width=*/4,
+                                                                     /*vec_lib=*/"MASSV");
+            std::regex exp4_call(R"(call <4 x double> @llvm\.exp\.v4f64\(<4 x double> .*\))");
+            REQUIRE(std::regex_search(massv4_library_module_str, m, exp4_call));
+
+            // Check correct replacement of @llvm.exp.v4f32 into @vexpf when using Accelerate.
+            std::string accelerate_library_module_str =
+                run_llvm_visitor(nmodl_text,
+                                 /*opt=*/false,
+                                 /*use_single_precision=*/true,
+                                 /*vector_width=*/4,
+                                 /*vec_lib=*/"Accelerate");
+            std::regex accelerate_exp_decl(R"(declare <4 x float> @vexpf\(<4 x float>\))");
+            std::regex accelerate_exp_call(R"(call <4 x float> @vexpf\(<4 x float> .*\))");
+            std::regex fexp_call(R"(call <4 x float> @llvm\.exp\.v4f32\(<4 x float> .*\))");
+            REQUIRE(std::regex_search(accelerate_library_module_str, m, accelerate_exp_decl));
+            REQUIRE(std::regex_search(accelerate_library_module_str, m, accelerate_exp_call));
+            REQUIRE(!std::regex_search(accelerate_library_module_str, m, fexp_call));
+#endif
         }
     }
 }

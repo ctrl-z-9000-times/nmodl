@@ -3,6 +3,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 include_directories(${PYBIND11_INCLUDE_DIR} ${PYTHON_INCLUDE_DIRS})
 include_directories(${NMODL_PROJECT_SOURCE_DIR}/ext/catch ${NMODL_PROJECT_SOURCE_DIR}/test)
 include_directories(${NMODL_PROJECT_SOURCE_DIR}/src/solver)
+include_directories(${NMODL_PROJECT_SOURCE_DIR}/src/utils)
 include_directories(${NMODL_PROJECT_SOURCE_DIR}/ext/eigen)
 
 # =============================================================================
@@ -83,6 +84,7 @@ target_link_libraries(
   test_util
   printer
   ${NMODL_WRAPPER_LIBS})
+
 target_link_libraries(
   testcodegen
   codegen
@@ -96,9 +98,14 @@ target_link_libraries(
 
 if(NMODL_ENABLE_LLVM)
   include_directories(${LLVM_INCLUDE_DIRS} codegen)
+
+  add_library(benchmark_data STATIC codegen/codegen_data_helper.cpp)
+  add_dependencies(benchmark_data lexer)
+
   add_executable(testllvm visitor/main.cpp codegen/codegen_llvm_ir.cpp
                           codegen/codegen_data_helper.cpp codegen/codegen_llvm_instance_struct.cpp)
-  add_executable(test_llvm_runner visitor/main.cpp codegen/codegen_llvm_execution.cpp)
+  add_executable(test_llvm_runner visitor/main.cpp codegen/codegen_data_helper.cpp
+                                  codegen/codegen_llvm_execution.cpp)
   target_link_libraries(
     testllvm
     llvm_codegen
@@ -114,6 +121,7 @@ if(NMODL_ENABLE_LLVM)
   target_link_libraries(
     test_llvm_runner
     llvm_codegen
+    llvm_benchmark
     codegen
     visitor
     symtab

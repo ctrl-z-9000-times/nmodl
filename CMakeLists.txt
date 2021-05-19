@@ -25,6 +25,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/bin)
 option(NMODL_ENABLE_PYTHON_BINDINGS "Enable pybind11 based python bindings" OFF)
 option(NMODL_ENABLE_LEGACY_UNITS "Use original faraday, R, etc. instead of 2019 nist constants" OFF)
 option(NMODL_ENABLE_LLVM "Enable LLVM based code generation" ON)
+option(NMODL_ENABLE_JIT_EVENT_LISTENERS "Enable JITEventListener for Perf and Vtune" OFF)
 
 if(NMODL_ENABLE_LEGACY_UNITS)
   add_definitions(-DUSE_LEGACY_UNITS)
@@ -149,6 +150,9 @@ if(NMODL_ENABLE_LLVM)
   include(LLVMHelper)
   include_directories(${LLVM_INCLUDE_DIRS})
   add_definitions(-DNMODL_LLVM_BACKEND)
+  if(LLVM_VERSION VERSION_LESS_EQUAL 12)
+    add_definitions(-DLLVM_VERSION_LESS_THAN_13)
+  endif()
 endif()
 
 # =============================================================================
@@ -184,6 +188,7 @@ set(MEMORYCHECK_COMMAND_OPTIONS
 # do not enable tests if nmodl is used as submodule
 if(NOT NMODL_AS_SUBPROJECT)
   include(CTest)
+  add_subdirectory(test/benchmark)
   add_subdirectory(test/unit)
 endif()
 
@@ -205,20 +210,7 @@ endif()
 # =============================================================================
 include(${PROJECT_SOURCE_DIR}/src/language/code_generator.cmake)
 
-add_subdirectory(src/codegen)
-if(NMODL_ENABLE_LLVM)
-  add_subdirectory(src/codegen/llvm)
-endif()
-add_subdirectory(src/language)
-add_subdirectory(src/lexer)
-add_subdirectory(src/nmodl)
-add_subdirectory(src/parser)
-add_subdirectory(src/printer)
-add_subdirectory(src/symtab)
-add_subdirectory(src/utils)
-add_subdirectory(src/visitors)
-add_subdirectory(src/pybind)
-add_subdirectory(src/solver)
+add_subdirectory(src)
 
 # =============================================================================
 # Prepare units database file from nrnunits.lib.in
@@ -277,6 +269,7 @@ if(cmake_generator_tolower MATCHES "makefile")
     message(STATUS "  VERSION           | ${LLVM_PACKAGE_VERSION}")
     message(STATUS "  INCLUDE           | ${LLVM_INCLUDE_DIRS}")
     message(STATUS "  CMAKE             | ${LLVM_CMAKE_DIR}")
+    message(STATUS "  JIT LISTENERS     | ${NMODL_ENABLE_JIT_EVENT_LISTENERS}")
   endif()
   if(NMODL_CLANG_FORMAT)
     message(STATUS "Clang Format        | ${ClangFormat_EXECUTABLE}")

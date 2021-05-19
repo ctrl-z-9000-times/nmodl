@@ -680,7 +680,7 @@ bool CodegenCVisitor::ion_variable_struct_required() const {
 /**
  * \details This can be override in the backend. For example, parameters can be constant
  * except in INITIAL block where they are set to 0. As initial block is/can be
- * executed on c/cpu backend, gpu/cuda backend can mark the parameter as constnat.
+ * executed on c/cpu backend, gpu/cuda backend can mark the parameter as constant.
  */
 bool CodegenCVisitor::is_constant_variable(const std::string& name) const {
     auto symbol = program_symtab->lookup_in_scope(name);
@@ -1033,6 +1033,9 @@ void CodegenCVisitor::print_abort_routine() const {
 std::string CodegenCVisitor::compute_method_name(BlockType type) const {
     if (type == BlockType::Initial) {
         return method_name(naming::NRN_INIT_METHOD);
+    }
+    if (type == BlockType::Destructor) {
+        return method_name(naming::NRN_DESTRUCTOR_METHOD);
     }
     if (type == BlockType::State) {
         return method_name(naming::NRN_STATE_METHOD);
@@ -1704,7 +1707,7 @@ std::string CodegenCVisitor::process_verbatim_text(std::string text) {
             name = "&" + name;
         }
         if (token == "_STRIDE") {
-            name = (layout == LayoutType::soa) ? "pnodecount+id" : "1";
+            name = "pnodecount+id";
         }
         result += name;
     }
@@ -1792,24 +1795,18 @@ std::string CodegenCVisitor::process_shadow_update_statement(ShadowUseStatement&
 void CodegenCVisitor::print_nmodl_constants() {
     if (!info.factor_definitions.empty()) {
         printer->add_newline(2);
-        printer->add_line("/** constants used in nmodl */");
+        printer->add_line("/** constants used in nmodl from UNITS */");
         for (const auto& it: info.factor_definitions) {
-            printer->add_line("static const double {} = {};"_format(it->get_node_name(),
-                                                                    it->get_value()->get_value()));
+#ifdef USE_LEGACY_UNITS
+            const std::string format_string = "static const double {} = {:g};";
+#else
+            const std::string format_string = "static const double {} = {:.18g};";
+#endif
+            printer->add_line(fmt::format(format_string,
+                                          it->get_node_name(),
+                                          stod(it->get_value()->get_value())));
         }
     }
-}
-
-
-void CodegenCVisitor::print_memory_layout_getter() {
-    printer->add_newline(2);
-    printer->add_line("static inline int get_memory_layout() {");
-    if (layout == LayoutType::aos) {
-        printer->add_line("    return 1;  //aos");
-    } else {
-        printer->add_line("    return 0;  //soa");
-    }
-    printer->add_line("}");
 }
 
 
@@ -1867,14 +1864,6 @@ void CodegenCVisitor::print_memb_list_getter() {
     printer->add_line("    }");
     printer->add_line("    return nt->_ml_list[get_mech_type()];");
     printer->add_line("}");
-}
-
-
-void CodegenCVisitor::print_post_channel_iteration_common_code() {
-    if (layout == LayoutType::aos) {
-        printer->add_line("data = ml->data + id*{};"_format(float_variables_size()));
-        printer->add_line("indexes = ml->pdata + id*{};"_format(int_variables_size()));
-    }
 }
 
 
@@ -1959,18 +1948,14 @@ std::string CodegenCVisitor::float_variable_name(const SymbolType& symbol,
     // clang-format off
     if (symbol->is_array()) {
         if (use_instance) {
-            auto stride = (layout == LayoutType::soa) ? dimension : num_float;
-            return "(inst->{}+id*{})"_format(name, stride);
+            return "(inst->{}+id*{})"_format(name, dimension);
         }
-        auto stride = (layout == LayoutType::soa) ? "{}*pnodecount+id*{}"_format(position, dimension) : "{}"_format(position);
-        return "(data+{})"_format(stride);
+        return "(data + {}*pnodecount + id*{})"_format(position, dimension);
     }
     if (use_instance) {
-        auto stride = (layout == LayoutType::soa) ? "id" : "id*{}"_format(num_float);
-        return "inst->{}[{}]"_format(name, stride);
+        return "inst->{}[id]"_format(name);
     }
-    auto stride = (layout == LayoutType::soa) ? "{}*pnodecount+id"_format(position) : "{}"_format(position);
-    return "data[{}]"_format(stride);
+    return "data[{}*pnodecount + id]"_format(position);
     // clang-format on
 }
 
@@ -1980,29 +1965,24 @@ std::string CodegenCVisitor::int_variable_name(const IndexVariableInfo& symbol,
                                                bool use_instance) const {
     auto position = position_of_int_var(name);
     auto num_int = int_variables_size();
-    std::string offset;
     // clang-format off
     if (symbol.is_index) {
-        offset = std::to_string(position);
         if (use_instance) {
-            return "inst->{}[{}]"_format(name, offset);
+            return "inst->{}[{}]"_format(name, position);
         }
-        return "indexes[{}]"_format(offset);
+        return "indexes[{}]"_format(position);
     }
     if (symbol.is_integer) {
         if (use_instance) {
-            offset = (layout == LayoutType::soa) ? "{}*pnodecount+id"_format(position) : "id*{}+{}"_format(num_int, position);
-            return "inst->{}[{}]"_format(name, offset);
+            return "inst->{}[{}*pnodecount+id]"_format(name, position);
         }
-        offset = (layout == LayoutType::soa) ? "{}*pnodecount+id"_format(position) : "id";
-        return "indexes[{}]"_format(offset);
+        return "indexes[{}*pnodecount+id]"_format(position);
     }
-    offset = (layout == LayoutType::soa) ? "{}*pnodecount+id"_format(position) : "{}"_format(position);
     if (use_instance) {
-        return "inst->{}[indexes[{}]]"_format(name, offset);
+        return "inst->{}[indexes[{}*pnodecount + id]]"_format(name, position);
     }
     auto data = symbol.is_vdata ? "_vdata" : "_data";
-    return "nt->{}[indexes[{}]]"_format(data, offset);
+    return "nt->{}[indexes[{}*pnodecount + id]]"_format(data, position);
     // clang-format on
 }
 
@@ -2400,8 +2380,6 @@ void CodegenCVisitor::print_global_variables_for_hoc() {
  *  - If nrn_get_mechtype is < -1 means that mechanism is not used in the
  *    context of neuron execution and hence could be ignored in coreneuron
  *    execution.
- *  - Each mechanism could have different layout and hence we register the
- *    layout with the simulator. In practice all mechanisms have same layout.
  *  - Ions are internally defined and their types can be queried similar to
  *    other mechanisms.
  *  - hoc_register_var may not be needed in the context of coreneuron
@@ -2424,13 +2402,16 @@ void CodegenCVisitor::print_mechanism_register() {
     printer->add_line("}");
 
     printer->add_newline();
-    printer->add_line("_nrn_layout_reg(mech_type, get_memory_layout());");
+    printer->add_line("_nrn_layout_reg(mech_type, 0);");  // 0 for SoA
 
     // register mechanism
     auto args = register_mechanism_arguments();
     auto nobjects = num_thread_objects();
     if (info.point_process) {
-        printer->add_line("point_register_mech({}, NULL, NULL, {});"_format(args, nobjects));
+        printer->add_line("point_register_mech({}, NULL, {}, {});"_format(
+            args,
+            info.destructor_node ? method_name(naming::NRN_DESTRUCTOR_METHOD) : "NULL",
+            nobjects));
     } else {
         printer->add_line("register_mech({}, {});"_format(args, nobjects));
     }
@@ -2777,7 +2758,7 @@ void CodegenCVisitor::print_global_variable_setup() {
                 value = *value_ptr;
             }
             /// use %g to be same as nocmodl in neuron
-            printer->add_line("{} = {};"_format(name, "{:g}"_format(value)));
+            printer->add_line("{} = {:g};"_format(name, value));
         }
     }
 
@@ -2790,7 +2771,7 @@ void CodegenCVisitor::print_global_variable_setup() {
             value = *value_ptr;
         }
         /// use %g to be same as nocmodl in neuron
-        printer->add_line("{} = {};"_format(name, "{:g}"_format(value)));
+        printer->add_line("{} = {:g};"_format(name, value));
     }
 
     if (info.table_count > 0) {
@@ -2917,10 +2898,8 @@ void CodegenCVisitor::print_instance_variable_setup() {
     }
 
     std::string stride;
-    if (layout == LayoutType::soa) {
-        printer->add_line("int pnodecount = ml->_nodecount_padded;");
-        stride = "*pnodecount";
-    }
+    printer->add_line("int pnodecount = ml->_nodecount_padded;");
+    stride = "*pnodecount";
 
     printer->add_line("Datum* indexes = ml->pdata;");
 
@@ -3095,8 +3074,6 @@ void CodegenCVisitor::print_nrn_init(bool skip_init_check) {
     print_channel_iteration_tiling_block_begin(BlockType::Initial);
     print_channel_iteration_block_begin(BlockType::Initial);
 
-    print_post_channel_iteration_common_code();
-
     if (info.net_receive_node != nullptr) {
         printer->add_line("{} = -1e20;"_format(get_variable_name("tsave")));
     }
@@ -3118,9 +3095,20 @@ void CodegenCVisitor::print_nrn_init(bool skip_init_check) {
 }
 
 
+void CodegenCVisitor::print_nrn_destructor() {
+    printer->add_newline(2);
+    print_global_function_common_code(BlockType::Destructor);
+    if (info.destructor_node != nullptr) {
+        const auto& block = info.destructor_node->get_statement_block();
+        print_statement_block(*block.get(), false, false);
+    }
+    printer->end_block(1);
+}
+
+
 void CodegenCVisitor::print_nrn_alloc() {
     printer->add_newline(2);
-    auto method = method_name("nrn_alloc");
+    auto method = method_name(naming::NRN_ALLOC_METHOD);
     printer->start_block("static void {}(double* data, Datum* indexes, int type) "_format(method));
     printer->add_line("// do nothing");
     printer->end_block(1);
@@ -3189,7 +3177,6 @@ void CodegenCVisitor::print_watch_check() {
     print_global_function_common_code(BlockType::Watch);
     print_channel_iteration_tiling_block_begin(BlockType::Watch);
     print_channel_iteration_block_begin(BlockType::Watch);
-    print_post_channel_iteration_common_code();
 
     if (info.is_voltage_used_by_watch_statements()) {
         printer->add_line("int node_id = node_index[id];");
@@ -3337,17 +3324,18 @@ void CodegenCVisitor::print_net_move_call(const FunctionCall& node) {
     // artificial cells don't use spike buffering
     // clang-format off
     if (info.artificial_cell) {
-        printer->add_text("artcell_net_move(&{}, {}, {}, nt->_t+"_format(tqitem, weight_index, pnt));
+        printer->add_text("artcell_net_move(&{}, {}, nt->_t+"_format(tqitem, pnt));
+        print_vector_elements(arguments, ", ");
+        printer->add_text(")");
     } else {
         auto point_process = get_variable_name("point_process");
         std::string t = get_variable_name("t");
         printer->add_text("net_send_buffering(");
         printer->add_text("ml->_net_send_buffer, 2, {}, {}, {}, {}+"_format(tqitem, weight_index, point_process, t));
+        print_vector_elements(arguments, ", ");
+        printer->add_text(", 0.0");
+        printer->add_text(")");
     }
-    // clang-format off
-    print_vector_elements(arguments, ", ");
-    printer->add_text(", 0.0");
-    printer->add_text(")");
 }
 
 
@@ -3576,9 +3564,7 @@ void CodegenCVisitor::visit_for_netcon(const ast::ForNetcon& node) {
         })->index;
     const auto num_int = int_variables_size();
 
-    std::string offset = (layout == LayoutType::soa) ? "{}*pnodecount + id"_format(index)
-                                                     : "{} + id*{}"_format(index, num_int);
-    printer->add_text("const size_t offset = {};"_format(offset));
+    printer->add_text("const size_t offset = {}*pnodecount + id;"_format(index));
     printer->add_newline();
     printer->add_line(
         "const size_t for_netcon_start = nt->_fornetcon_perm_indices[indexes[offset]];");
@@ -3703,7 +3689,7 @@ void CodegenCVisitor::print_derivimplicit_kernel(Block* block) {
     auto list_num = info.derivimplicit_list_num;
     auto block_name = block->get_node_name();
     auto primes_size = info.primes_size;
-    auto stride = (layout == LayoutType::aos) ? "" : "*pnodecount+id";
+    auto stride = "*pnodecount+id";
 
     printer->add_newline(2);
 
@@ -3815,7 +3801,6 @@ void CodegenCVisitor::print_nrn_state() {
     print_global_function_common_code(BlockType::State);
     print_channel_iteration_tiling_block_begin(BlockType::State);
     print_channel_iteration_block_begin(BlockType::State);
-    print_post_channel_iteration_common_code();
 
     printer->add_line("int node_id = node_index[id];");
     printer->add_line("double v = voltage[node_id];");
@@ -4030,7 +4015,6 @@ void CodegenCVisitor::print_nrn_cur() {
     print_global_function_common_code(BlockType::Equation);
     print_channel_iteration_tiling_block_begin(BlockType::Equation);
     print_channel_iteration_block_begin(BlockType::Equation);
-    print_post_channel_iteration_common_code();
     print_nrn_cur_kernel(*info.breakpoint_node);
     print_nrn_cur_matrix_shadow_update();
     if (!nrn_cur_reduction_loop_required()) {
@@ -4078,7 +4062,6 @@ void CodegenCVisitor::print_namespace_end() {
 
 void CodegenCVisitor::print_common_getters() {
     print_first_pointer_var_index_getter();
-    print_memory_layout_getter();
     print_net_receive_arg_size_getter();
     print_thread_getters();
     print_num_variable_getter();
@@ -4136,6 +4119,7 @@ void CodegenCVisitor::print_codegen_routines() {
     print_global_variable_setup();
     print_instance_variable_setup();
     print_nrn_alloc();
+    print_nrn_destructor();
     print_compute_functions();
     print_check_table_thread_function();
     print_mechanism_register();

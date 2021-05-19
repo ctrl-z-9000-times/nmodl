@@ -11,6 +11,7 @@
 #include "ast/all.hpp"
 #include "codegen/codegen_helper_visitor.hpp"
 #include "utils/logger.hpp"
+#include "visitors/rename_visitor.hpp"
 #include "visitors/visitor_utils.hpp"
 
 namespace nmodl {
@@ -24,6 +25,30 @@ const ast::AstNodeType CodegenLLVMHelperVisitor::FLOAT_TYPE = ast::AstNodeType::
 const std::string CodegenLLVMHelperVisitor::NODECOUNT_VAR = "node_count";
 const std::string CodegenLLVMHelperVisitor::VOLTAGE_VAR = "voltage";
 const std::string CodegenLLVMHelperVisitor::NODE_INDEX_VAR = "node_index";
+
+static constexpr const char epilogue_variable_prefix[] = "epilogue_";
+
+/// Create asr::Varname node with given a given variable name
+static ast::VarName* create_varname(const std::string& varname) {
+    return new ast::VarName(new ast::Name(new ast::String(varname)), nullptr, nullptr);
+}
+
+/**
+ * Create initialization expression
+ * @param code Usually "id = 0" as a string
+ * @return Expression representing code
+ * \todo : we can not use `create_statement_as_expression` function because
+ *         NMODL parser is using `ast::Double` type to represent all variables
+ *         including Integer. See #542.
+ */
+static std::shared_ptr<ast::Expression> int_initialization_expression(
+    const std::string& induction_var,
+    int value = 0) {
+    // create id = 0
+    const auto& id = create_varname(induction_var);
+    const auto& zero = new ast::Integer(value, nullptr);
+    return std::make_shared<ast::BinaryExpression>(id, ast::BinaryOperator(ast::BOP_ASSIGN), zero);
+}
 
 /**
  * \brief Create variable definition statement
@@ -120,7 +145,8 @@ void CodegenLLVMHelperVisitor::create_function_for_node(ast::Block& node) {
     auto name = new ast::Name(new ast::String(function_name));
 
     /// return variable name has "ret_" prefix
-    auto return_var = new ast::Name(new ast::String("ret_" + function_name));
+    std::string return_var_name = "ret_{}"_format(function_name);
+    auto return_var = new ast::Name(new ast::String(return_var_name));
 
     /// return type based on node type
     ast::CodegenVarType* ret_var_type = nullptr;
@@ -137,6 +163,11 @@ void CodegenLLVMHelperVisitor::create_function_for_node(ast::Block& node) {
     /// convert local statement to codegenvar statement
     convert_local_statement(*block);
 
+    if (node.get_node_type() == ast::AstNodeType::PROCEDURE_BLOCK) {
+        block->insert_statement(statements.begin(),
+                                std::make_shared<ast::ExpressionStatement>(
+                                    int_initialization_expression(return_var_name)));
+    }
     /// insert return variable at the start of the block
     ast::CodegenVarVector codegen_vars;
     codegen_vars.emplace_back(new ast::CodegenVar(0, return_var->clone()));
@@ -162,6 +193,9 @@ void CodegenLLVMHelperVisitor::create_function_for_node(ast::Block& node) {
     /// we have all information for code generation function, create a new node
     /// which will be inserted later into AST
     auto function = std::make_shared<ast::CodegenFunction>(fun_ret_type, name, arguments, block);
+    if (node.get_token()) {
+        function->set_token(*node.get_token()->clone());
+    }
     codegen_functions.push_back(function);
 }
 /**
@@ -214,13 +248,26 @@ std::shared_ptr<ast::InstanceStruct> CodegenLLVMHelperVisitor::create_instance_s
 static void append_statements_from_block(ast::StatementVector& statements,
                                          const std::shared_ptr<ast::StatementBlock>& block) {
     const auto& block_statements = block->get_statements();
-    statements.insert(statements.end(), block_statements.begin(), block_statements.end());
+    for (const auto& statement: block_statements) {
+        const auto& expression_statement = std::dynamic_pointer_cast<ast::ExpressionStatement>(
+            statement);
+        if (!expression_statement->get_expression()->is_solve_block())
+            statements.push_back(statement);
+    }
 }
 
-static std::shared_ptr<ast::CodegenAtomicStatement> create_atomic_statement(std::string& lhs_str,
-                                                                            std::string& op_str,
-                                                                            std::string& rhs_str) {
-    auto lhs = std::make_shared<ast::Name>(new ast::String(lhs_str));
+static std::shared_ptr<ast::CodegenAtomicStatement> create_atomic_statement(
+    std::string& ion_varname,
+    std::string& index_varname,
+    std::string& op_str,
+    std::string& rhs_str) {
+    // create lhs expression
+    auto varname = new ast::Name(new ast::String(ion_varname));
+    auto index = new ast::Name(new ast::String(index_varname));
+    auto lhs = std::make_shared<ast::VarName>(new ast::IndexedName(varname, index),
+                                              /*at=*/nullptr,
+                                              /*index=*/nullptr);
+
     auto op = ast::BinaryOperator(ast::string_to_binaryop(op_str));
     auto rhs = create_expression(rhs_str);
     return std::make_shared<ast::CodegenAtomicStatement>(lhs, op, rhs);
@@ -323,12 +370,11 @@ void CodegenLLVMHelperVisitor::ion_write_statements(BlockType type,
         std::string index_varname = "{}_id"_format(ion_varname);
         // load index
         std::string index_statement = "{} = {}_index[id]"_format(index_varname, ion_varname);
-        // ion variable to write (with index)
-        std::string ion_to_write = "{}[{}]"_format(ion_varname, index_varname);
         // push index definition, index statement and actual write statement
         int_variables.push_back(index_varname);
         index_statements.push_back(visitor::create_statement(index_statement));
-        body_statements.push_back(create_atomic_statement(ion_to_write, op, rhs));
+        // pass ion variable to write and its index
+        body_statements.push_back(create_atomic_statement(ion_varname, index_varname, op, rhs));
     };
 
     /// iterate over all ions and create write ion statements for given block type
@@ -428,12 +474,13 @@ void CodegenLLVMHelperVisitor::convert_to_instance_variable(ast::Node& node,
  * it to CodegenVarListStatement that will represent all variables as double.
  */
 void CodegenLLVMHelperVisitor::convert_local_statement(ast::StatementBlock& node) {
-    /// first process all children blocks if any
-    node.visit_children(*this);
+    /// collect all local statement block
+    const auto& statements = collect_nodes(node, {ast::AstNodeType::LOCAL_LIST_STATEMENT});
 
-    /// check if block contains LOCAL statement
-    const auto& local_statement = visitor::get_local_list_statement(node);
-    if (local_statement) {
+    /// iterate over all statements and replace each with codegen variable
+    for (const auto& statement: statements) {
+        const auto& local_statement = std::dynamic_pointer_cast<ast::LocalListStatement>(statement);
+
         /// create codegen variables from local variables
         /// clone variable to make new independent statement
         ast::CodegenVarVector variables;
@@ -442,15 +489,51 @@ void CodegenLLVMHelperVisitor::convert_local_statement(ast::StatementBlock& node
         }
 
         /// remove local list statement now
-        const auto& statements = node.get_statements();
-        node.erase_statement(statements.begin());
+        std::unordered_set<nmodl::ast::Statement*> to_delete({local_statement.get()});
+        /// local list statement is enclosed in statement block
+        const auto& parent_node = dynamic_cast<ast::StatementBlock*>(local_statement->get_parent());
+        parent_node->erase_statement(to_delete);
 
         /// create new codegen variable statement and insert at the beginning of the block
         auto type = new ast::CodegenVarType(FLOAT_TYPE);
-        auto statement = std::make_shared<ast::CodegenVarListStatement>(type, variables);
-        node.insert_statement(statements.begin(), statement);
+        auto new_statement = std::make_shared<ast::CodegenVarListStatement>(type, variables);
+        const auto& statements = parent_node->get_statements();
+        parent_node->insert_statement(statements.begin(), new_statement);
     }
 }
+
+/**
+ * \brief Visit StatementBlock and rename all LOCAL variables
+ * @param node AST node representing Statement block
+ *
+ * Statement block in remainder loop will have same LOCAL variables from
+ * main loop. In order to avoid conflict during lookup, rename each local
+ * variable by appending unique number. The number used as suffix is just
+ * a counter used for Statement block.
+ */
+void CodegenLLVMHelperVisitor::rename_local_variables(ast::StatementBlock& node) {
+    /// local block counter just to append unique number
+    static int local_block_counter = 1;
+
+    /// collect all local statement block
+    const auto& statements = collect_nodes(node, {ast::AstNodeType::LOCAL_LIST_STATEMENT});
+
+    /// iterate over each statement and rename all variables
+    for (const auto& statement: statements) {
+        const auto& local_statement = std::dynamic_pointer_cast<ast::LocalListStatement>(statement);
+
+        /// rename local variable in entire statement block
+        for (auto& var: local_statement->get_variables()) {
+            std::string old_name = var->get_node_name();
+            std::string new_name = "{}_{}"_format(old_name, local_block_counter);
+            visitor::RenameVisitor(old_name, new_name).visit_statement_block(node);
+        }
+    }
+
+    /// make it unique for next statement block
+    local_block_counter++;
+}
+
 
 void CodegenLLVMHelperVisitor::visit_procedure_block(ast::ProcedureBlock& node) {
     node.visit_children(*this);
@@ -462,30 +545,9 @@ void CodegenLLVMHelperVisitor::visit_function_block(ast::FunctionBlock& node) {
     create_function_for_node(node);
 }
 
-/// Create asr::Varname node with given a given variable name
-static ast::VarName* create_varname(const std::string& varname) {
-    return new ast::VarName(new ast::Name(new ast::String(varname)), nullptr, nullptr);
-}
-
-/**
- * Create for loop initialization expression
- * @param code Usually "id = 0" as a string
- * @return Expression representing code
- * \todo : we can not use `create_statement_as_expression` function because
- *         NMODL parser is using `ast::Double` type to represent all variables
- *         including Integer. See #542.
- */
-static std::shared_ptr<ast::Expression> loop_initialization_expression(
-    const std::string& induction_var) {
-    // create id = 0
-    const auto& id = create_varname(induction_var);
-    const auto& zero = new ast::Integer(0, nullptr);
-    return std::make_shared<ast::BinaryExpression>(id, ast::BinaryOperator(ast::BOP_ASSIGN), zero);
-}
-
 /**
  * Create loop increment expression `id = id + width`
- * \todo : same as loop_initialization_expression()
+ * \todo : same as int_initialization_expression()
  */
 static std::shared_ptr<ast::Expression> loop_increment_expression(const std::string& induction_var,
                                                                   int vector_width) {
@@ -498,6 +560,39 @@ static std::shared_ptr<ast::Expression> loop_increment_expression(const std::str
     return std::make_shared<ast::BinaryExpression>(id->clone(),
                                                    ast::BinaryOperator(ast::BOP_ASSIGN),
                                                    inc_expr);
+}
+
+/**
+ * Create loop count comparison expression
+ *
+ * Based on if loop is vectorised or not, the condition for loop
+ * is different. For example:
+ *  - serial loop : `id < node_count`
+ *  - vector loop : `id < (node_count - vector_width + 1)`
+ *
+ * \todo : same as int_initialization_expression()
+ */
+static std::shared_ptr<ast::Expression> loop_count_expression(const std::string& induction_var,
+                                                              const std::string& node_count,
+                                                              int vector_width) {
+    const auto& id = create_varname(induction_var);
+    const auto& mech_node_count = create_varname(node_count);
+
+    // For non-vectorised loop, the condition is id < mech->node_count
+    if (vector_width == 1) {
+        return std::make_shared<ast::BinaryExpression>(id->clone(),
+                                                       ast::BinaryOperator(ast::BOP_LESS),
+                                                       mech_node_count);
+    }
+
+    // For vectorised loop, the condition is id < mech->node_count - vector_width + 1
+    const auto& remainder = new ast::Integer(vector_width - 1, /*macro=*/nullptr);
+    const auto& count = new ast::BinaryExpression(mech_node_count,
+                                                  ast::BinaryOperator(ast::BOP_SUBTRACTION),
+                                                  remainder);
+    return std::make_shared<ast::BinaryExpression>(id->clone(),
+                                                   ast::BinaryOperator(ast::BOP_LESS),
+                                                   count);
 }
 
 /**
@@ -515,25 +610,21 @@ void CodegenLLVMHelperVisitor::visit_nrn_state_block(ast::NrnStateBlock& node) {
 
     /// create variable definition for loop index and insert at the beginning
     std::string loop_index_var = "id";
-    std::vector<std::string> int_variables{"id"};
-    function_statements.push_back(create_local_variable_statement(int_variables, INTEGER_TYPE));
+    std::vector<std::string> induction_variables{"id"};
+    function_statements.push_back(
+        create_local_variable_statement(induction_variables, INTEGER_TYPE));
+
+    /// create vectors of local variables that would be used in compute part
+    std::vector<std::string> int_variables{"node_id"};
+    std::vector<std::string> double_variables{"v"};
 
     /// create now main compute part : for loop over channel instances
-
-    /// loop constructs : initialization, condition and increment
-    const auto& initialization = loop_initialization_expression(naming::INDUCTION_VAR);
-    const auto& condition = create_expression(
-        "{} < {}"_format(naming::INDUCTION_VAR, NODECOUNT_VAR));
-    const auto& increment = loop_increment_expression(naming::INDUCTION_VAR, vector_width);
 
     /// loop body : initialization + solve blocks
     ast::StatementVector loop_def_statements;
     ast::StatementVector loop_index_statements;
     ast::StatementVector loop_body_statements;
     {
-        std::vector<std::string> int_variables{"node_id"};
-        std::vector<std::string> double_variables{"v"};
-
         /// access node index and corresponding voltage
         loop_index_statements.push_back(
             visitor::create_statement("node_id = node_index[{}]"_format(naming::INDUCTION_VAR)));
@@ -569,10 +660,6 @@ void CodegenLLVMHelperVisitor::visit_nrn_state_block(ast::NrnStateBlock& node) {
                              loop_index_statements,
                              loop_body_statements);
 
-        loop_def_statements.push_back(create_local_variable_statement(int_variables, INTEGER_TYPE));
-        loop_def_statements.push_back(
-            create_local_variable_statement(double_variables, FLOAT_TYPE));
-
         // \todo handle process_shadow_update_statement and wrote_conc_call yet
     }
 
@@ -584,20 +671,85 @@ void CodegenLLVMHelperVisitor::visit_nrn_state_block(ast::NrnStateBlock& node) {
     /// now construct a new code block which will become the body of the loop
     auto loop_block = std::make_shared<ast::StatementBlock>(loop_body);
 
-    /// convert local statement to codegenvar statement
-    convert_local_statement(*loop_block);
+    /// declare main FOR loop local variables
+    function_statements.push_back(create_local_variable_statement(int_variables, INTEGER_TYPE));
+    function_statements.push_back(create_local_variable_statement(double_variables, FLOAT_TYPE));
 
-    /// create for loop node
-    auto for_loop_statement = std::make_shared<ast::CodegenForStatement>(initialization,
-                                                                         condition,
-                                                                         increment,
-                                                                         loop_block);
+    /// main loop possibly vectorized on vector_width
+    {
+        /// loop constructs : initialization, condition and increment
+        const auto& initialization = int_initialization_expression(naming::INDUCTION_VAR);
+        const auto& condition =
+            loop_count_expression(naming::INDUCTION_VAR, NODECOUNT_VAR, vector_width);
+        const auto& increment = loop_increment_expression(naming::INDUCTION_VAR, vector_width);
 
-    /// convert all variables inside loop body to instance variables
-    convert_to_instance_variable(*for_loop_statement, loop_index_var);
+        /// clone it
+        auto local_loop_block = std::shared_ptr<ast::StatementBlock>(loop_block->clone());
 
-    /// loop itself becomes one of the statement in the function
-    function_statements.push_back(for_loop_statement);
+        /// convert local statement to codegenvar statement
+        convert_local_statement(*local_loop_block);
+
+        auto for_loop_statement_main = std::make_shared<ast::CodegenForStatement>(initialization,
+                                                                                  condition,
+                                                                                  increment,
+                                                                                  local_loop_block);
+
+        /// convert all variables inside loop body to instance variables
+        convert_to_instance_variable(*for_loop_statement_main, loop_index_var);
+
+        /// loop itself becomes one of the statement in the function
+        function_statements.push_back(for_loop_statement_main);
+    }
+
+    /// vectors containing renamed FOR loop local variables
+    std::vector<std::string> renamed_int_variables;
+    std::vector<std::string> renamed_double_variables;
+
+    /// remainder loop possibly vectorized on vector_width
+    if (vector_width > 1) {
+        /// loop constructs : initialization, condition and increment
+        const auto& condition =
+            loop_count_expression(naming::INDUCTION_VAR, NODECOUNT_VAR, /*vector_width=*/1);
+        const auto& increment = loop_increment_expression(naming::INDUCTION_VAR,
+                                                          /*vector_width=*/1);
+
+        /// rename local variables to avoid conflict with main loop
+        rename_local_variables(*loop_block);
+
+        /// convert local statement to codegenvar statement
+        convert_local_statement(*loop_block);
+
+        auto for_loop_statement_remainder =
+            std::make_shared<ast::CodegenForStatement>(nullptr, condition, increment, loop_block);
+
+        const auto& loop_statements = for_loop_statement_remainder->get_statement_block();
+        // \todo: Change RenameVisitor to take a vector of names to which it would append a single
+        // prefix.
+        for (const auto& name: int_variables) {
+            std::string new_name = epilogue_variable_prefix + name;
+            renamed_int_variables.push_back(new_name);
+            visitor::RenameVisitor v(name, new_name);
+            loop_statements->accept(v);
+        }
+        for (const auto& name: double_variables) {
+            std::string new_name = epilogue_variable_prefix + name;
+            renamed_double_variables.push_back(new_name);
+            visitor::RenameVisitor v(name, epilogue_variable_prefix + name);
+            loop_statements->accept(v);
+        }
+
+        /// declare remainder FOR loop local variables
+        function_statements.push_back(
+            create_local_variable_statement(renamed_int_variables, INTEGER_TYPE));
+        function_statements.push_back(
+            create_local_variable_statement(renamed_double_variables, FLOAT_TYPE));
+
+        /// convert all variables inside loop body to instance variables
+        convert_to_instance_variable(*for_loop_statement_remainder, loop_index_var);
+
+        /// loop itself becomes one of the statement in the function
+        function_statements.push_back(for_loop_statement_remainder);
+    }
 
     /// new block for the function
     auto function_block = new ast::StatementBlock(function_statements);
