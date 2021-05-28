@@ -3140,8 +3140,7 @@ void CodegenCVisitor::print_instance_variable_setup() {
         auto range_var_type = get_range_var_float_type(var);
         if (float_type == range_var_type) {
             auto variable = "ml->data+{}{}"_format(id, stride);
-            auto device_variable = get_variable_device_pointer(variable, float_type_pointer);
-            printer->add_line("inst->{} = {};"_format(name, device_variable));
+            printer->add_line("inst->{} = nrn_get_compute_data_ptr<{}>(nt, ml, {}, \"{}\");"_format(name, range_var_type, id, name));
         } else {
             printer->add_line("inst->{} = setup_range_variable(ml->data+{}{}, pnodecount);"_format(
                 name, id, stride));
