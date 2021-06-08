@@ -9,6 +9,7 @@
 #include "ast/all.hpp"
 
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/ValueSymbolTable.h"
 
@@ -227,6 +228,13 @@ void IRBuilder::set_kernel_attributes() {
     // By convention, the compute kernel does not free memory and does not throw exceptions.
     current_function->setDoesNotFreeMemory();
     current_function->setDoesNotThrow();
+
+    // If targeting SVE ISA, add the corresponding target feature attibute.
+    if (scalable) {
+        llvm::AttrBuilder attributes;
+        attributes.addAttribute("target-features", "+sve");
+        current_function->addAttributes(llvm::AttributeList::FunctionIndex, attributes);
+    }
 
     // We also want to specify that the pointers that instance struct holds do not alias, unless
     // specified otherwise. In order to do that, we add a `noalias` attribute to the argument. As
