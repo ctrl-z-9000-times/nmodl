@@ -229,7 +229,7 @@ void IRBuilder::set_kernel_attributes() {
     current_function->setDoesNotFreeMemory();
     current_function->setDoesNotThrow();
 
-    // If targeting SVE ISA, add the corresponding target feature attibute.
+    // If targeting SVE ISA, add the corresponding target feature attribute.
     if (scalable) {
         llvm::AttrBuilder attributes;
         attributes.addAttribute("target-features", "+sve");
