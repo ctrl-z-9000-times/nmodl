@@ -6,19 +6,18 @@
  *************************************************************************/
 
 #include "codegen/llvm/codegen_llvm_visitor.hpp"
+#include "codegen/llvm/llvm_utils.hpp"
 
 #include "ast/all.hpp"
 #include "visitors/rename_visitor.hpp"
 #include "visitors/visitor_utils.hpp"
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
-#include "llvm/Support/ToolOutputFile.h"
 
 #if LLVM_VERSION_MAJOR >= 13
 #include "llvm/CodeGen/ReplaceWithVeclib.h"
@@ -70,9 +69,12 @@ void CodegenLLVMVisitor::add_vectorizable_functions_from_vec_lib(llvm::TargetLib
                                                                  llvm::Triple& triple) {
     // Since LLVM does not support SLEEF as a vector library yet, process it separately.
     if (vector_library == "SLEEF") {
-        // Populate function definitions of only exp and pow (for now)
+// clang-format off
 #define FIXED(w) llvm::ElementCount::getFixed(w)
+// clang-format on
 #define DISPATCH(func, vec_func, width) {func, vec_func, width},
+
+        // Populate function definitions of only exp and pow (for now)
         const llvm::VecDesc aarch64_functions[] = {
             // clang-format off
             DISPATCH("llvm.exp.f32", "_ZGVnN4v_expf", FIXED(4))
@@ -429,25 +431,6 @@ llvm::Value* CodegenLLVMVisitor::read_variable(const ast::VarName& node) {
 
     throw std::runtime_error("Error: the type of '" + node.get_node_name() +
                              "' is not supported\n");
-}
-
-void CodegenLLVMVisitor::run_ir_opt_passes() {
-    // Run some common optimisation passes that are commonly suggested.
-    opt_pm.add(llvm::createInstructionCombiningPass());
-    opt_pm.add(llvm::createReassociatePass());
-    opt_pm.add(llvm::createGVNPass());
-    opt_pm.add(llvm::createCFGSimplificationPass());
-
-    // Initialize pass manager.
-    opt_pm.doInitialization();
-
-    // Iterate over all functions and run the optimisation passes.
-    auto& functions = module->getFunctionList();
-    for (auto& function: functions) {
-        llvm::verifyFunction(function);
-        opt_pm.run(function);
-    }
-    opt_pm.doFinalization();
 }
 
 void CodegenLLVMVisitor::write_to_variable(const ast::VarName& node, llvm::Value* value) {
@@ -880,9 +863,10 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
         throw std::runtime_error("Error: incorrect IR has been generated!\n" + ostream.str());
     }
 
-    if (opt_passes) {
+    if (opt_level_ir) {
         logger->info("Running LLVM optimisation passes");
-        run_ir_opt_passes();
+        utils::initialise_optimisation_passes();
+        utils::optimise_module(*module, opt_level_ir);
     }
 
     // Optionally, replace LLVM math intrinsics with vector library calls.
@@ -899,29 +883,21 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
         add_vectorizable_functions_from_vec_lib(target_lib_info, triple);
 
         // Run passes that replace math intrinsics.
-        codegen_pm.add(new llvm::TargetLibraryInfoWrapperPass(target_lib_info));
-        codegen_pm.add(new llvm::ReplaceWithVeclibLegacy);
-        codegen_pm.doInitialization();
+        llvm::legacy::FunctionPassManager fpm(module.get());
+        fpm.add(new llvm::TargetLibraryInfoWrapperPass(target_lib_info));
+        fpm.add(new llvm::ReplaceWithVeclibLegacy);
+        fpm.doInitialization();
         for (auto& function: module->getFunctionList()) {
             if (!function.isDeclaration())
-                codegen_pm.run(function);
+                fpm.run(function);
         }
-        codegen_pm.doFinalization();
+        fpm.doFinalization();
 #endif
     }
 
     // If the output directory is specified, save the IR to .ll file.
-    // \todo: Consider saving the generated LLVM IR to bytecode (.bc) file instead.
     if (output_dir != ".") {
-        std::error_code error_code;
-        std::unique_ptr<llvm::ToolOutputFile> out = std::make_unique<llvm::ToolOutputFile>(
-            output_dir + "/" + mod_filename + ".ll", error_code, llvm::sys::fs::OF_Text);
-        if (error_code)
-            throw std::runtime_error("Error: " + error_code.message());
-
-        std::unique_ptr<llvm::AssemblyAnnotationWriter> annotator;
-        module->print(out->os(), annotator.get());
-        out->keep();
+        utils::save_ir_to_ll_file(*module, output_dir + "/" + mod_filename);
     }
 
     logger->debug("Dumping generated IR...\n" + dump_module());
