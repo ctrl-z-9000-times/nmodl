@@ -10,10 +10,11 @@ set -e
 # sample run
 # sh nmodl-llvm-time.sh -n 100000000 -o llvm_benchmark_all_big_100mil -ext -e 5
 
-module purge
-unset MODULEPATH
-export MODULEPATH="/gpfs/bbp.cscs.ch/ssd/apps/hpc/jenkins/modules/all"
-module load unstable
+#module purge
+#unset MODULEPATH
+#export MODULEPATH="/gpfs/bbp.cscs.ch/ssd/apps/hpc/jenkins/modules/all"
+#module load unstable
+module load Python/3.8.5 GCCcore/.9.3.0
 
 # default params
 inst_size=100000000
@@ -95,27 +96,29 @@ while [[ "$1" != "" ]]; do
 done
 
 #intel paths
-intel_library_dir=$(module show intel 2>&1 | grep " LD_LIBRARY_PATH " | awk -F' ' '{print $3}' | head -n 1)
-svml_lib=$intel_library_dir/intel64_lin/libsvml.so
-intel_exe=$(module show intel 2>&1 | grep " PATH " | awk -F' ' '{print $3}' | head -n 1)/icpc
+#intel_library_dir=$(module show Intel 2>&1 | grep "\"LD_LIBRARY_PATH\"" | awk -F' ' '{print $3}' | head -n 2 | tail -n 1)
+intel_library_dir=/p/software/jusuf/stages/2020/software/iccifort/2020.2.254-GCC-9.3.0/compilers_and_libraries_2020.2.254/linux/compiler/lib/intel64
+svml_lib=$intel_library_dir/libsvml.so
+intel_exe=/p/software/jusuf/stages/2020/software/iccifort/2020.2.254-GCC-9.3.0/compilers_and_libraries_2020.2.254/linux/bin/intel64/icpc
+export INTEL_LICENSE_FILE=1702@licsrv11.zam.kfa-juelich.de
 
 #sleef library
-sleef_lib=/gpfs/bbp.cscs.ch/apps/hpc/llvm-install/0621/sleef-3.5.1/lib64/libsleefgnuabi.so
+sleef_lib=/p/project/icei-hbp-2020-0013/magkanar/sleef/build/install/lib64/libsleefgnuabi.so.3
 
 #llvm path
-llvm_path="/gpfs/bbp.cscs.ch/apps/hpc/llvm-install/0621"
+#llvm_path="/gpfs/bbp.cscs.ch/apps/hpc/llvm-install/0621"
+llvm_path="/p/project/icei-hbp-2020-0013/magkanar/llvm-project/build_openmp/llvm-min-install"
 clang_exe=${llvm_path}/bin/clang++
-llc_exe=${llvm_path}/bin/llc
 
 #gcc path
-gcc_exe=$(module show gcc 2>&1 | grep " PATH " | awk -F' ' '{print $3}' | head -n 1)/g++
+gcc_exe=/p/software/jusuf/stages/2020/software/GCCcore/9.3.0/bin/g++
 
 #add ld library path
 export LD_LIBRARY_PATH=`dirname $svml_lib`:`dirname $sleef_lib`:${llvm_path}/lib:$LD_LIBRARY_PATH
 
 # nmodl binary
 nmodl_src_dir=$(pwd)/../../
-nmodl_exe=${nmodl_src_dir}/build_benchmark/bin/nmodl
+nmodl_exe=${nmodl_src_dir}/build/bin/nmodl
 
 # external kernel
 kernels_path=${nmodl_src_dir}/test/benchmark/kernels
@@ -147,6 +150,8 @@ declare -a clang_flags_skylake_avx512=(
 declare -a clang_flags_broadwell=(
     "-O3 -march=broadwell -mtune=broadwell -ffast-math -fopenmp"
     "-O3 -march=broadwell -mtune=broadwell -ffast-math -fopenmp -fveclib=SVML"
+    "-O3 -march=znver1 -mtune=znver1 -ffast-math -fopenmp"
+    "-O3 -march=znver1 -mtune=znver1 -ffast-math -fopenmp -fveclib=SVML"
     )
 
 declare -a clang_flags_nehalem=(
@@ -179,7 +184,8 @@ declare -a benchmark_variance
 
 KERNEL_TARGETS="compute-bound memory-bound hh"
 
-ARCHITECTURES="skylake_avx512 broadwell nehalem"
+#ARCHITECTURES="skylake_avx512 broadwell nehalem"
+ARCHITECTURES="broadwell nehalem"
 
 COMPILERS="intel clang gcc"
 
