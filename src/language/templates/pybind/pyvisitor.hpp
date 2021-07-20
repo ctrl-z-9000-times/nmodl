@@ -34,12 +34,12 @@ using namespace visitor;
  * This class is used to interface nmodl::visitor::Visitor with the Python
  * world using `pybind11`.
  */
-class PyVisitor : public Visitor {
+class PyVisitor : public PtrVisitor {
 public:
-    using Visitor::Visitor;
+    using PtrVisitor::PtrVisitor;
 
     {% for node in nodes %}
-    void visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}& node) override;
+    void visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}* node) override;
     {% endfor %}
 };
 
@@ -52,12 +52,12 @@ public:
  * This class is used to interface nmodl::visitor::AstVisitor with the Python
  * world using `pybind11`.
  */
-class PyAstVisitor : public AstVisitor {
+class PyAstVisitor : public PtrAstVisitor {
 public:
-    using AstVisitor::AstVisitor;
+    using PtrAstVisitor::PtrAstVisitor;
 
     {% for node in nodes %}
-    void visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}& node) override;
+    void visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}* node) override;
     {% endfor %}
 };
 

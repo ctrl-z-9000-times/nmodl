@@ -102,14 +102,14 @@ namespace py = pybind11;
 
 
 {% for node in nodes %}
-void PyVisitor::visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}& node) {
-    PYBIND11_OVERLOAD_PURE(void, Visitor, visit_{{ node.class_name|snake_case }}, node);
+void PyVisitor::visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}* node) {
+    PYBIND11_OVERLOAD_PURE(void, PtrVisitor, visit_{{ node.class_name|snake_case }}, node);
 }
 {% endfor %}
 
 {% for node in nodes %}
-void PyAstVisitor::visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}& node) {
-    PYBIND11_OVERLOAD(void, AstVisitor, visit_{{ node.class_name|snake_case }}, node);
+void PyAstVisitor::visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}* node) {
+    PYBIND11_OVERLOAD(void, PtrAstVisitor, visit_{{ node.class_name|snake_case }}, node);
 }
 {% endfor %}
 
@@ -163,11 +163,11 @@ class PyNmodlPrintVisitor: private VisitorOStreamResources, public NmodlPrintVis
 void init_visitor_module(py::module& m) {
     py::module m_visitor = m.def_submodule("visitor");
 
-    py::class_<Visitor, PyVisitor> visitor(m_visitor, "Visitor", docstring::visitor_class);
+    py::class_<PtrVisitor, PyVisitor> visitor(m_visitor, "Visitor", docstring::visitor_class);
     visitor.def(py::init<>())
     // clang-format off
     {% for node in nodes %}
-        .def("visit_{{ node.class_name | snake_case }}", &Visitor::visit_{{ node.class_name | snake_case }})
+        .def("visit_{{ node.class_name | snake_case }}", &PtrVisitor::visit_{{ node.class_name | snake_case }})
         {% if loop.last -%};{% endif %}
     {% endfor %}  // clang-format on
 
@@ -188,12 +188,12 @@ void init_visitor_module(py::module& m) {
         {% if loop.last -%};{% endif %}
     {% endfor %} // clang-format on
 
-    py::class_<AstVisitor, Visitor, PyAstVisitor>
+    py::class_<PtrAstVisitor, PtrVisitor, PyAstVisitor>
             ast_visitor(m_visitor, "AstVisitor", docstring::ast_visitor_class);
     ast_visitor.def(py::init<>())
     // clang-format off
     {% for node in nodes %}
-    .def("visit_{{ node.class_name | snake_case }}", &AstVisitor::visit_{{ node.class_name | snake_case }})
+    .def("visit_{{ node.class_name | snake_case }}", &PtrAstVisitor::visit_{{ node.class_name | snake_case }})
     {% if loop.last -%};{% endif %}
     {% endfor %}
     // clang-format on

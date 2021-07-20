@@ -167,6 +167,8 @@ struct Ast: public std::enable_shared_from_this<Ast> {
    */
   virtual void accept(visitor::Visitor& v) = 0;
 
+  virtual void accept(visitor::PtrVisitor* v) = 0;
+
   /**
    * \brief Accept (or visit) the AST node using a given visitor
    * \param v constant visitor visiting the AST node
@@ -193,6 +195,8 @@ struct Ast: public std::enable_shared_from_this<Ast> {
    * \endcode
    */
   virtual void visit_children(visitor::Visitor& v) = 0;
+
+  virtual void visit_children(visitor::PtrVisitor* v) = 0;
 
   /**
    * \copydoc visit_children(visitor::Visitor& v)

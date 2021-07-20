@@ -51,6 +51,16 @@ class ConstAstVisitor: public ConstVisitor {
     {% endfor %}
 };
 
+/**
+ * \brief Concrete visitor for all AST classes
+ */
+class PtrAstVisitor: public PtrVisitor {
+  public:
+    {% for node in nodes %}
+    void visit_{{ node.class_name|snake_case }}(ast::{{ node.class_name }}* node) override;
+    {% endfor %}
+};
+
 /** \} */  // end of visitor_classes
 
 }  // namespace visitor
