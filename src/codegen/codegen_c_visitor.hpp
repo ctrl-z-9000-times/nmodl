@@ -1109,6 +1109,10 @@ class CodegenCVisitor: public visitor::ConstAstVisitor {
      */
     virtual void print_net_send_buf_count_update_to_device() const;
 
+    /**
+     * Print the code to update dt from host to device
+     */
+    virtual void print_dt_update_to_device() const;
 
     /**
      * Print the code to synchronise/wait on stream specific to NrnThread
@@ -1917,6 +1921,7 @@ class CodegenCVisitor: public visitor::ConstAstVisitor {
     void visit_while_statement(const ast::WhileStatement& node) override;
     void visit_derivimplicit_callback(const ast::DerivimplicitCallback& node) override;
     void visit_for_netcon(const ast::ForNetcon& node) override;
+    void visit_update_dt(const ast::UpdateDt& node) override;
 };
 
 
