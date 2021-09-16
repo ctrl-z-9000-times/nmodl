@@ -109,7 +109,7 @@ bool CodegenInfo::nrn_state_has_eigen_solver_block() const {
     if (nrn_state_block == nullptr) {
         return false;
     }
-    return !collect_nodes(*nrn_state_block, {ast::AstNodeType::EIGEN_NEWTON_SOLVER_BLOCK}).empty();
+    return !collect_nodes(*nrn_state_block, {ast::AstNodeType::EIGEN_NEWTON_SOLVER_BLOCK, ast::AstNodeType::EIGEN_LINEAR_SOLVER_BLOCK}).empty();
 }
 
 /**

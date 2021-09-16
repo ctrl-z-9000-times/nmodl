@@ -2581,7 +2581,7 @@ void CodegenCVisitor::print_mechanism_global_var_structure() {
         }
     }
 
-    if (info.primes_size != 0) {
+    if (info.primes_size != 0 && !info.nrn_state_has_eigen_solver_block()) {
         printer->add_line("int* {}slist1;"_format(qualifier));
         printer->add_line("int* {}dlist1;"_format(qualifier));
         codegen_global_variables.push_back(make_symbol("slist1"));
@@ -3045,7 +3045,7 @@ void CodegenCVisitor::print_global_variable_setup() {
     printer->add_line("}");
 
     // offsets for state variables
-    if (info.primes_size != 0) {
+    if (info.primes_size != 0 && !info.nrn_state_has_eigen_solver_block()) {
         auto slist1 = get_variable_name("slist1");
         auto dlist1 = get_variable_name("dlist1");
         auto n = info.primes_size;
