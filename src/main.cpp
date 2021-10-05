@@ -42,6 +42,7 @@
 #include "visitors/sympy_conductance_visitor.hpp"
 #include "visitors/sympy_solver_visitor.hpp"
 #include "visitors/symtab_visitor.hpp"
+#include "visitors/test_visitor.hpp"
 #include "visitors/units_visitor.hpp"
 #include "visitors/verbatim_var_rename_visitor.hpp"
 #include "visitors/verbatim_visitor.hpp"
@@ -315,6 +316,8 @@ int main(int argc, const char* argv[]) {
 
         /// just visit the ast
         AstVisitor().visit_program(*ast);
+
+        TestVisitor(ast).visit_program(*ast);
 
         /// construct symbol table
         {
