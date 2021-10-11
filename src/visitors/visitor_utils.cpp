@@ -241,17 +241,21 @@ std::pair<std::string, std::unordered_set<std::string>> statement_dependencies(
     const std::shared_ptr<ast::Expression>& rhs) {
     std::string key;
     std::unordered_set<std::string> out;
+    std::shared_ptr<ast::VarName> lhs_var_name;
 
     if (!lhs->is_var_name()) {
         return {key, out};
+    } else {
+        lhs_var_name = std::dynamic_pointer_cast<ast::VarName>(lhs);
     }
 
-    if (lhs->is_indexed_name()) {
-        auto index_name_node = std::dynamic_pointer_cast<ast::IndexedName>(lhs);
+    if (lhs_var_name->get_name()->is_indexed_name()) {
+        auto index_name_node = std::dynamic_pointer_cast<ast::IndexedName>(lhs_var_name->get_name());
         key = get_node_with_index(*index_name_node);
     } else {
-        key = to_nmodl(lhs);
+        key = to_nmodl(lhs_var_name);
     }
+    std::cout << "Key: " << key << std::endl;
     visitor::AstLookupVisitor lookup_visitor;
     lookup_visitor.lookup(*rhs, ast::AstNodeType::VAR_NAME);
     auto rhs_nodes = lookup_visitor.get_nodes();

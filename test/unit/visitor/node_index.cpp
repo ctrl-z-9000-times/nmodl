@@ -41,12 +41,14 @@ SCENARIO("Get node name with index TestVisitor", "[visitor][node_index]") {
 
     GIVEN("A simple NMODL block") {
         std::string nmodl_text = R"(
-            DERIVATIVE states {
-                tau = 11.1
-                exp(tau)
-            {
-                h'[0] = h[0] + 2 + n
+            STATE {
+                m[1]
             }
+            BREAKPOINT  {
+                SOLVE states METHOD euler
+            }
+            DERIVATIVE states {
+                m'[0] = mInf/mTau
             }
         )";
 
@@ -64,9 +66,10 @@ SCENARIO("Get node name with index TestVisitor", "[visitor][node_index]") {
                     std::cout<<"}"<<std::endl;
                 };
 
-                std::unordered_set<std::string> vars{"h[0]","n"};
-                std::string var("h[0]");
+                std::unordered_set<std::string> vars{"mInf", "mTau"};
+                std::string var("m[0]");
                 auto expect = std::make_pair(var,vars);
+                auto result1 = run_test_indexed_name(*ast);
                 auto result = run_test_dependencies(*ast);
                 print_dependencies(result);
                 REQUIRE(result.first == expect.first);

@@ -1250,6 +1250,7 @@ variable_name   :   name
                     }
                 |   name "[" integer_expression "]"
                     {
+                        std::cout << "Creation of IndexedName " << $1->get_node_name() << std::endl;
                         $$ = new ast::VarName(new ast::IndexedName($1, $3), nullptr, nullptr);
                     }
                 |   NAME_PTR "@" integer

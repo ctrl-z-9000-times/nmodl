@@ -27,30 +27,7 @@ add_executable(testparser parser/parser.cpp)
 add_executable(
   testvisitor
   visitor/main.cpp
-  visitor/after_cvode_to_cnexp.cpp
-  visitor/constant_folder.cpp
-  visitor/defuse_analyze.cpp
-  visitor/global_to_range.cpp
-  visitor/inline.cpp
-  visitor/ispc_rename.cpp
-  visitor/json.cpp
-  visitor/kinetic_block.cpp
-  visitor/localize.cpp
-  visitor/local_to_assigned.cpp
-  visitor/lookup.cpp
-  visitor/loop_unroll.cpp
-  visitor/misc.cpp
-  visitor/neuron_solve.cpp
-  visitor/nmodl.cpp
-  visitor/perf.cpp
-  visitor/rename.cpp
-  visitor/solve_block.cpp
-  visitor/steadystate.cpp
-  visitor/sympy_conductance.cpp
   visitor/sympy_solver.cpp
-  visitor/units.cpp
-  visitor/var_usage.cpp
-  visitor/verbatim.cpp
   visitor/node_index.cpp)
 add_executable(testprinter printer/printer.cpp)
 add_executable(testsymtab symtab/symbol_table.cpp)

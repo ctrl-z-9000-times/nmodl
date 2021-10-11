@@ -27,8 +27,10 @@ void TestVisitor::visit_indexed_name(ast::IndexedName& node) {
 }
 
 void TestVisitor::visit_diff_eq_expression(ast::DiffEqExpression& node) {
-    auto lhs = node.get_expression()->get_lhs();
-    auto rhs = node.get_expression()->get_rhs();
+    node.visit_children(*this);
+    const auto& bin_exp = std::static_pointer_cast<ast::BinaryExpression>(node.get_expression()); 
+    auto lhs = bin_exp->get_lhs();
+    auto rhs = bin_exp->get_rhs();
     dependencies = nmodl::statement_dependencies(lhs, rhs);
  }
 
@@ -39,6 +41,7 @@ std::pair<std::string, std::unordered_set<std::string>> TestVisitor::get_depende
     return dependencies;    
 }
 std::string TestVisitor::get_indexed_name() {
+    std::cout << "[TestVisitor] indexed_name: " << indexed_name << std::endl;
     return indexed_name;
 }
 
