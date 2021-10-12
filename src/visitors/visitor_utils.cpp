@@ -249,13 +249,16 @@ std::pair<std::string, std::unordered_set<std::string>> statement_dependencies(
         lhs_var_name = std::dynamic_pointer_cast<ast::VarName>(lhs);
     }
 
+    std::cout << "Key before: " << to_nmodl(lhs_var_name) << std::endl;
     if (lhs_var_name->get_name()->is_indexed_name()) {
         auto index_name_node = std::dynamic_pointer_cast<ast::IndexedName>(lhs_var_name->get_name());
         key = get_node_with_index(*index_name_node);
+        std::cout << "index name" << std::endl;
     } else {
-        key = to_nmodl(lhs_var_name);
+        key = lhs_var_name->get_node_name();
+        std::cout << "variable" << std::endl;
     }
-    std::cout << "Key: " << key << std::endl;
+    std::cout << "Key after: " << key << std::endl;
     visitor::AstLookupVisitor lookup_visitor;
     lookup_visitor.lookup(*rhs, ast::AstNodeType::VAR_NAME);
     auto rhs_nodes = lookup_visitor.get_nodes();
