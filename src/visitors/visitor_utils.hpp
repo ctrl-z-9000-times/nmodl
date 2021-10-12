@@ -116,6 +116,10 @@ std::string to_json(const ast::Ast& node,
                     bool expand = false,
                     bool add_nmodl = false);
 
+std::string get_indexed_name(const ast::IndexedName& node);
+
+std::string get_full_var_name(const ast::VarName& node);
+
 /// If \p lhs and \p rhs combined represent an assignment (we assume to have an "=" in between them)
 /// we extract the variables on which the assigned variable depends on. We provide the input with
 /// lhs and rhs because there are a few nodes that have this similar structure but slightly
@@ -123,7 +127,5 @@ std::string to_json(const ast::Ast& node,
 std::pair<std::string, std::unordered_set<std::string>> statement_dependencies(
     const std::shared_ptr<ast::Expression>& lhs,
     const std::shared_ptr<ast::Expression>& rhs);
-
-std::string get_node_with_index(const ast::IndexedName& node);
 
 }  // namespace nmodl

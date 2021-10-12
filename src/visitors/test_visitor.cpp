@@ -23,7 +23,7 @@ namespace nmodl {
 namespace visitor {
 
 void TestVisitor::visit_indexed_name(ast::IndexedName& node) {
-    indexed_name = nmodl::get_node_with_index(node);
+    indexed_name = nmodl::get_indexed_name(node);
 }
 
 void TestVisitor::visit_diff_eq_expression(ast::DiffEqExpression& node) {
@@ -41,7 +41,6 @@ std::pair<std::string, std::unordered_set<std::string>> TestVisitor::get_depende
     return dependencies;    
 }
 std::string TestVisitor::get_indexed_name() {
-    std::cout << "[TestVisitor] indexed_name: " << indexed_name << std::endl;
     return indexed_name;
 }
 

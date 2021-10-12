@@ -236,29 +236,34 @@ std::string to_json(const ast::Ast& node, bool compact, bool expand, bool add_nm
     return stream.str();
 }
 
+std::string get_indexed_name(const ast::IndexedName& name) {
+    return name.get_node_name() + "[" + to_nmodl(name.get_length()) + "]";
+}
+
+std::string get_full_var_name(const ast::VarName& node) {
+    std::string full_var_name;
+    if (node.get_name()->is_indexed_name()) {
+        auto index_name_node = std::dynamic_pointer_cast<ast::IndexedName>(node.get_name());
+        full_var_name = get_indexed_name(*index_name_node);
+    } else {
+        full_var_name = node.get_node_name();
+    }
+    return full_var_name;
+}
+
 std::pair<std::string, std::unordered_set<std::string>> statement_dependencies(
     const std::shared_ptr<ast::Expression>& lhs,
     const std::shared_ptr<ast::Expression>& rhs) {
     std::string key;
     std::unordered_set<std::string> out;
-    std::shared_ptr<ast::VarName> lhs_var_name;
 
     if (!lhs->is_var_name()) {
         return {key, out};
-    } else {
-        lhs_var_name = std::dynamic_pointer_cast<ast::VarName>(lhs);
     }
 
-    std::cout << "Key before: " << to_nmodl(lhs_var_name) << std::endl;
-    if (lhs_var_name->get_name()->is_indexed_name()) {
-        auto index_name_node = std::dynamic_pointer_cast<ast::IndexedName>(lhs_var_name->get_name());
-        key = get_node_with_index(*index_name_node);
-        std::cout << "index name" << std::endl;
-    } else {
-        key = lhs_var_name->get_node_name();
-        std::cout << "variable" << std::endl;
-    }
-    std::cout << "Key after: " << key << std::endl;
+    const auto& lhs_var_name = std::dynamic_pointer_cast<ast::VarName>(lhs);
+    key = get_full_var_name(*lhs_var_name);
+
     visitor::AstLookupVisitor lookup_visitor;
     lookup_visitor.lookup(*rhs, ast::AstNodeType::VAR_NAME);
     auto rhs_nodes = lookup_visitor.get_nodes();
@@ -268,10 +273,6 @@ std::pair<std::string, std::unordered_set<std::string>> statement_dependencies(
 
 
     return {key, out};
-}
-
-std::string get_node_with_index(const ast::IndexedName& node) {
-    return node.get_node_name() + "[" + to_nmodl(node.get_length()) + "]";
 }
 
 }  // namespace nmodl
