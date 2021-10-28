@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (C) 2018-2019 Blue Brain Project
+ * Copyright (C) 2018-2021 Blue Brain Project
  *
  * This file is part of NMODL distributed under the terms of the GNU
  * Lesser General Public License. See top-level LICENSE file for details.
@@ -49,7 +49,6 @@ using namespace ast;
  * world using `pybind11`.
  */
 struct PyAst: public Ast {
-
     void visit_children(visitor::Visitor& v) override {
         PYBIND11_OVERLOAD_PURE(void,            /// Return type
                                Ast,             /// Parent class
@@ -134,6 +133,7 @@ struct PyAst: public Ast {
         PYBIND11_OVERLOAD(bool, Ast, is_ast, );
     }
 
+    // clang-format off
     {% for node in nodes %}
 
     bool is_{{node.class_name | snake_case}}() const noexcept override {
@@ -141,6 +141,24 @@ struct PyAst: public Ast {
     }
 
     {% endfor %}
+    // clang-format on
 };
 
 /** \} */  // end of ast_python
+
+namespace nmodl {
+namespace ast {
+namespace impl {
+void init_AstNodeType(pybind11::module const&);
+void init_BinaryOp(pybind11::module const&);
+pybind11::class_<Ast, PyAst, std::shared_ptr<Ast>> init_Ast(pybind11::module const& ast);
+
+{% for node in nodes %}
+pybind11::class_<{{node.class_name}}, std::shared_ptr<{{node.class_name}}>> init_{{node.class_name}}(
+    pybind11::module const&,
+    pybind11::class_<{{node.base_class}}, std::shared_ptr<{{node.base_class}}>> const&);
+{% endfor %}
+
+}  // namespace impl
+}  // namespace ast
+}  // namespace nmodl

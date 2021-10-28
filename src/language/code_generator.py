@@ -152,6 +152,9 @@ class CodeGenerator(
         """
         # special template "ast/node.hpp used to generate multiple .hpp files
         node_hpp_tpl = self.jinja_templates_dir / "ast" / "node.hpp"
+        # special template "ast/pyast_node.cpp" used to generate multiple .cpp
+        # files
+        pyast_node_cpp_tpl = self.jinja_templates_dir / "pybind" / "pyast_node.cpp"
         # special template only included by other templates
         node_class_tpl = self.jinja_templates_dir / "ast" / "node_class.template"
         node_class_inline_def_tpl = self.jinja_templates_dir / "ast" / "node_class_inline_definition.template"
@@ -189,6 +192,19 @@ class CodeGenerator(
                             app=self,
                             input=filepath,
                             output=self.base_dir / node.cpp_header,
+                            context=dict(node=node, **extracontext[filepath]),
+                            extradeps=extradeps[filepath],
+                        )
+                        tasks.append(task)
+                        yield task
+                elif filepath == pyast_node_cpp_tpl:
+                    # generate one C++ source file per AST node type. This is to
+                    # split up the compilation into more, smaller source files
+                    for node in self.nodes:
+                        task = JinjaTask(
+                            app=self,
+                            input=filepath,
+                            output=self.base_dir / "pybind" / ("pyast_" + node.class_name + ".cpp"),
                             context=dict(node=node, **extracontext[filepath]),
                             extradeps=extradeps[filepath],
                         )
