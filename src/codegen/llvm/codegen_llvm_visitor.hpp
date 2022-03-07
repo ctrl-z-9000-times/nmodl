@@ -29,12 +29,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
-#include "llvm/Transforms/InstCombine/InstCombine.h"
-#include "llvm/Transforms/Scalar.h"
-#include "llvm/Transforms/Scalar/GVN.h"
 
 namespace nmodl {
 namespace codegen {
@@ -49,15 +45,6 @@ namespace codegen {
  * @{
  */
 
-/// A map to query vector library by its string value.
-static const std::map<std::string, llvm::TargetLibraryInfoImpl::VectorLibrary> veclib_map = {
-    {"Accelerate", llvm::TargetLibraryInfoImpl::Accelerate},
-#ifndef LLVM_VERSION_LESS_THAN_13
-    {"libmvec", llvm::TargetLibraryInfoImpl::LIBMVEC_X86},
-#endif
-    {"MASSV", llvm::TargetLibraryInfoImpl::MASSV},
-    {"SVML", llvm::TargetLibraryInfoImpl::SVML},
-    {"none", llvm::TargetLibraryInfoImpl::NoLibrary}};
 
 /**
  * \class CodegenLLVMVisitor
@@ -92,17 +79,11 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     /// Instance variable helper.
     InstanceVarHelper instance_var_helper;
 
-    /// Run optimisation passes if true.
-    bool opt_passes;
+    /// Optimisation level for LLVM IR transformations.
+    int opt_level_ir;
 
-    /// Pass manager for optimisation passes that are run on IR and are not related to target.
-    llvm::legacy::FunctionPassManager opt_pm;
-
-    /// Pass manager for optimisation passes that are used for target code generation.
-    llvm::legacy::FunctionPassManager codegen_pm;
-
-    /// Vector library used for maths functions.
-    llvm::TargetLibraryInfoImpl::VectorLibrary vector_library;
+    /// Vector library used for math functions.
+    std::string vector_library;
 
     /// Explicit vectorisation width.
     int vector_width;
@@ -110,11 +91,13 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
   public:
     CodegenLLVMVisitor(const std::string& mod_filename,
                        const std::string& output_dir,
-                       bool opt_passes,
+                       int opt_level_ir,
                        bool use_single_precision = false,
                        int vector_width = 1,
                        std::string vec_lib = "none",
-                       bool add_debug_information = false)
+                       bool add_debug_information = false,
+                       std::vector<std::string> fast_math_flags = {},
+                       bool llvm_assume_alias = false)
         : CodegenCVisitor(mod_filename,
                           output_dir,
                           use_single_precision ? "float" : "double",
@@ -123,14 +106,16 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
                           ".cpp")
         , mod_filename(mod_filename)
         , output_dir(output_dir)
-        , opt_passes(opt_passes)
+        , opt_level_ir(opt_level_ir)
         , vector_width(vector_width)
-        , vector_library(veclib_map.at(vec_lib))
+        , vector_library(vec_lib)
         , add_debug_information(add_debug_information)
-        , ir_builder(*context, use_single_precision, vector_width)
-        , debug_builder(*module)
-        , codegen_pm(module.get())
-        , opt_pm(module.get()) {}
+        , ir_builder(*context,
+                     use_single_precision,
+                     vector_width,
+                     fast_math_flags,
+                     !llvm_assume_alias)
+        , debug_builder(*module) {}
 
     /// Dumps the generated LLVM IR module to string.
     std::string dump_module() const {
@@ -287,6 +272,12 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
     void wrap_kernel_functions();
 
   private:
+#if LLVM_VERSION_MAJOR >= 13
+    /// Populates target library info with the vector library definitions.
+    void add_vectorizable_functions_from_vec_lib(llvm::TargetLibraryInfoImpl& tli,
+                                                 llvm::Triple& triple);
+#endif
+
     /// Accepts the given AST node and returns the processed value.
     llvm::Value* accept_and_get(const std::shared_ptr<ast::Node>& node);
 
@@ -308,6 +299,9 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
 
     /// Creates a call to `printf` function.
     void create_printf_call(const ast::ExpressionVector& arguments);
+
+    /// Creates a vectorized version of the LLVM IR for the simple control flow statement.
+    void create_vectorized_control_flow_block(const ast::IfStatement& node);
 
     /// Returns LLVM type for the given CodegenVarType AST node.
     llvm::Type* get_codegen_var_type(const ast::CodegenVarType& node);
@@ -331,11 +325,6 @@ class CodegenLLVMVisitor: public CodegenCVisitor {
 
     /// Reads the given variable and returns the processed value.
     llvm::Value* read_variable(const ast::VarName& node);
-
-
-    /// Run multiple LLVM optimisation passes on generated IR.
-    /// TODO: this can be moved to a dedicated file or deprecated.
-    void run_ir_opt_passes();
 
     //// Writes the value to the given variable.
     void write_to_variable(const ast::VarName& node, llvm::Value* value);

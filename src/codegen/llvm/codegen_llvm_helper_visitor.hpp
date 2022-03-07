@@ -100,7 +100,7 @@ struct InstanceVarHelper {
  * these will be common across all backends.
  */
 class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
-    // explicit vectorisation width
+    /// explicit vectorisation width
     int vector_width;
 
     /// newly generated code generation specific functions
@@ -129,7 +129,7 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
     static const std::string NODE_INDEX_VAR;
 
     CodegenLLVMHelperVisitor(int vector_width)
-        : vector_width(vector_width){};
+        : vector_width(vector_width) {}
 
     const InstanceVarHelper& get_instance_var_helper() {
         return instance_var_helper;
@@ -158,6 +158,9 @@ class CodegenLLVMHelperVisitor: public visitor::AstVisitor {
 
     void convert_local_statement(ast::StatementBlock& node);
     void rename_local_variables(ast::StatementBlock& node);
+
+    /// Remove Function and Procedure blocks from the node since they are already inlined
+    void remove_inlined_nodes(ast::Program& node);
 
     void visit_procedure_block(ast::ProcedureBlock& node) override;
     void visit_function_block(ast::FunctionBlock& node) override;

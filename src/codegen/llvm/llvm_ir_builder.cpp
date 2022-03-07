@@ -92,11 +92,15 @@ llvm::Value* IRBuilder::pop_last_value() {
 /****************************************************************************************/
 
 void IRBuilder::create_boolean_constant(int value) {
-    value_stack.push_back(get_vector_constant<llvm::ConstantInt>(get_boolean_type(), value));
+    if (vector_width > 1 && vectorize) {
+        value_stack.push_back(get_vector_constant<llvm::ConstantInt>(get_boolean_type(), value));
+    } else {
+        value_stack.push_back(get_scalar_constant<llvm::ConstantInt>(get_boolean_type(), value));
+    }
 }
 
 void IRBuilder::create_fp_constant(const std::string& value) {
-    if (instruction_width > 1 && vectorize) {
+    if (vector_width > 1 && vectorize) {
         value_stack.push_back(get_vector_constant<llvm::ConstantFP>(get_fp_type(), value));
     } else {
         value_stack.push_back(get_scalar_constant<llvm::ConstantFP>(get_fp_type(), value));
@@ -108,7 +112,7 @@ llvm::Value* IRBuilder::create_global_string(const ast::String& node) {
 }
 
 void IRBuilder::create_i32_constant(int value) {
-    if (instruction_width > 1 && vectorize) {
+    if (vector_width > 1 && vectorize) {
         value_stack.push_back(get_vector_constant<llvm::ConstantInt>(get_i32_type(), value));
     } else {
         value_stack.push_back(get_scalar_constant<llvm::ConstantInt>(get_i32_type(), value));
@@ -123,7 +127,7 @@ llvm::Value* IRBuilder::get_scalar_constant(llvm::Type* type, V value) {
 template <typename C, typename V>
 llvm::Value* IRBuilder::get_vector_constant(llvm::Type* type, V value) {
     ConstantVector constants;
-    for (unsigned i = 0; i < instruction_width; ++i) {
+    for (unsigned i = 0; i < vector_width; ++i) {
         const auto& element = C::get(type, value);
         constants.push_back(element);
     }
@@ -140,7 +144,7 @@ void IRBuilder::allocate_function_arguments(llvm::Function* function,
     for (auto& arg: function->args()) {
         std::string arg_name = nmodl_arguments[i++].get()->get_node_name();
         llvm::Type* arg_type = arg.getType();
-        llvm::Value* alloca = builder.CreateAlloca(arg_type, /*ArraySize=*/nullptr, arg_name);
+        llvm::Value* alloca = create_alloca(arg_name, arg_type);
         arg.setName(arg_name);
         builder.CreateStore(&arg, alloca);
     }
@@ -161,9 +165,26 @@ void IRBuilder::create_function_call(llvm::Function* callee,
 void IRBuilder::create_intrinsic(const std::string& name,
                                  ValueVector& argument_values,
                                  TypeVector& argument_types) {
+    // Process 'pow' call separately.
+    if (name == "pow") {
+        llvm::Value* pow_intrinsic = builder.CreateIntrinsic(llvm::Intrinsic::pow,
+                                                             {argument_types.front()},
+                                                             argument_values);
+        value_stack.push_back(pow_intrinsic);
+        return;
+    }
+
+    // Create other intrinsics.
     unsigned intrinsic_id = llvm::StringSwitch<llvm::Intrinsic::ID>(name)
+                                .Case("ceil", llvm::Intrinsic::ceil)
+                                .Case("cos", llvm::Intrinsic::cos)
                                 .Case("exp", llvm::Intrinsic::exp)
-                                .Case("pow", llvm::Intrinsic::pow)
+                                .Case("fabs", llvm::Intrinsic::fabs)
+                                .Case("floor", llvm::Intrinsic::floor)
+                                .Case("log", llvm::Intrinsic::log)
+                                .Case("log10", llvm::Intrinsic::log10)
+                                .Case("sin", llvm::Intrinsic::sin)
+                                .Case("sqrt", llvm::Intrinsic::sqrt)
                                 .Default(llvm::Intrinsic::not_intrinsic);
     if (intrinsic_id) {
         llvm::Value* intrinsic =
@@ -179,12 +200,15 @@ void IRBuilder::set_kernel_attributes() {
     current_function->setDoesNotFreeMemory();
     current_function->setDoesNotThrow();
 
-    // We also want to specify that the pointers that instance struct holds, do not alias. In order
-    // to do that, we add a `noalias` attribute to the argument. As per Clang's specification:
+    // We also want to specify that the pointers that instance struct holds do not alias, unless
+    // specified otherwise. In order to do that, we add a `noalias` attribute to the argument. As
+    // per Clang's specification:
     //  > The `noalias` attribute indicates that the only memory accesses inside function are loads
     //  > and stores from objects pointed to by its pointer-typed arguments, with arbitrary
     //  > offsets.
-    current_function->addParamAttr(0, llvm::Attribute::NoAlias);
+    if (assume_noalias) {
+        current_function->addParamAttr(0, llvm::Attribute::NoAlias);
+    }
 
     // Finally, specify that the struct pointer does not capture and is read-only.
     current_function->addParamAttr(0, llvm::Attribute::NoCapture);
@@ -224,11 +248,43 @@ void IRBuilder::set_loop_metadata(llvm::BranchInst* branch) {
 /*                             LLVM instruction utilities                               */
 /****************************************************************************************/
 
+llvm::Value* IRBuilder::create_alloca(const std::string& name, llvm::Type* type) {
+    // If insertion point for `alloca` instructions is not set, then create the instruction in the
+    // entry block and set it to be the insertion point.
+    if (!alloca_ip) {
+        // Get the entry block and insert the `alloca` instruction there.
+        llvm::BasicBlock* current_block = builder.GetInsertBlock();
+        llvm::BasicBlock& entry_block = current_block->getParent()->getEntryBlock();
+        builder.SetInsertPoint(&entry_block);
+        llvm::Value* alloca = builder.CreateAlloca(type, /*ArraySize=*/nullptr, name);
+
+        // Set the `alloca` instruction insertion point and restore the insertion point for the next
+        // set of instructions.
+        alloca_ip = llvm::cast<llvm::AllocaInst>(alloca);
+        builder.SetInsertPoint(current_block);
+        return alloca;
+    }
+
+    // Create `alloca` instruction.
+    llvm::BasicBlock* alloca_block = alloca_ip->getParent();
+    const auto& data_layout = alloca_block->getModule()->getDataLayout();
+    auto* alloca = new llvm::AllocaInst(type,
+                                        data_layout.getAllocaAddrSpace(),
+                                        /*ArraySize=*/nullptr,
+                                        data_layout.getPrefTypeAlign(type),
+                                        name);
+
+    // Insert `alloca` at the specified insertion point and reset it for the next instructions.
+    alloca_block->getInstList().insertAfter(alloca_ip->getIterator(), alloca);
+    alloca_ip = alloca;
+    return alloca;
+}
+
 void IRBuilder::create_array_alloca(const std::string& name,
                                     llvm::Type* element_type,
                                     int num_elements) {
     llvm::Type* array_type = llvm::ArrayType::get(element_type, num_elements);
-    builder.CreateAlloca(array_type, /*ArraySize=*/nullptr, name);
+    create_alloca(name, array_type);
 }
 
 void IRBuilder::create_binary_op(llvm::Value* lhs, llvm::Value* rhs, ast::BinaryOp op) {
@@ -262,6 +318,11 @@ void IRBuilder::create_binary_op(llvm::Value* lhs, llvm::Value* rhs, ast::Binary
         DISPATCH(ast::BinaryOp::BOP_NOT_EQUAL, builder.CreateFCmpONE, builder.CreateICmpNE);
 
 #undef DISPATCH
+
+    // Separately replace ^ with the `pow` intrinsic.
+    case ast::BinaryOp::BOP_POWER:
+        result = builder.CreateIntrinsic(llvm::Intrinsic::pow, {lhs->getType()}, {lhs, rhs});
+        break;
 
     // Logical instructions.
     case ast::BinaryOp::BOP_AND:
@@ -312,19 +373,27 @@ llvm::Value* IRBuilder::create_index(llvm::Value* value) {
     const auto& element_type = llvm::cast<llvm::IntegerType>(vector_type->getElementType());
     if (element_type->getBitWidth() == i64_type->getIntegerBitWidth())
         return value;
-    return builder.CreateSExtOrTrunc(value,
-                                     llvm::FixedVectorType::get(i64_type, instruction_width));
+    return builder.CreateSExtOrTrunc(value, llvm::FixedVectorType::get(i64_type, vector_width));
 }
 
-llvm::Value* IRBuilder::create_load(const std::string& name) {
+llvm::Value* IRBuilder::create_load(const std::string& name, bool masked) {
     llvm::Value* ptr = lookup_value(name);
+
+    // Check if the generated IR is vectorized and masked.
+    if (masked) {
+        return builder.CreateMaskedLoad(ptr, llvm::Align(), mask);
+    }
     llvm::Type* loaded_type = ptr->getType()->getPointerElementType();
     llvm::Value* loaded = builder.CreateLoad(loaded_type, ptr);
     value_stack.push_back(loaded);
     return loaded;
 }
 
-llvm::Value* IRBuilder::create_load(llvm::Value* ptr) {
+llvm::Value* IRBuilder::create_load(llvm::Value* ptr, bool masked) {
+    // Check if the generated IR is vectorized and masked.
+    if (masked) {
+        return builder.CreateMaskedLoad(ptr, llvm::Align(), mask);
+    }
     llvm::Type* loaded_type = ptr->getType()->getPointerElementType();
     llvm::Value* loaded = builder.CreateLoad(loaded_type, ptr);
     value_stack.push_back(loaded);
@@ -336,12 +405,23 @@ llvm::Value* IRBuilder::create_load_from_array(const std::string& name, llvm::Va
     return create_load(element_ptr);
 }
 
-void IRBuilder::create_store(const std::string& name, llvm::Value* value) {
+void IRBuilder::create_store(const std::string& name, llvm::Value* value, bool masked) {
     llvm::Value* ptr = lookup_value(name);
+
+    // Check if the generated IR is vectorized and masked.
+    if (masked) {
+        builder.CreateMaskedStore(value, ptr, llvm::Align(), mask);
+        return;
+    }
     builder.CreateStore(value, ptr);
 }
 
-void IRBuilder::create_store(llvm::Value* ptr, llvm::Value* value) {
+void IRBuilder::create_store(llvm::Value* ptr, llvm::Value* value, bool masked) {
+    // Check if the generated IR is vectorized and masked.
+    if (masked) {
+        builder.CreateMaskedStore(value, ptr, llvm::Align(), mask);
+        return;
+    }
     builder.CreateStore(value, ptr);
 }
 
@@ -364,12 +444,12 @@ void IRBuilder::create_scalar_or_vector_alloca(const std::string& name,
     // Even if generating vectorised code, some variables still need to be scalar. Particularly, the
     // induction variable "id" and remainder loop variables (that start with "epilogue" prefix).
     llvm::Type* type;
-    if (instruction_width > 1 && vectorize && name != kernel_id && name.rfind("epilogue", 0)) {
-        type = llvm::FixedVectorType::get(element_or_scalar_type, instruction_width);
+    if (vector_width > 1 && vectorize && name != kernel_id && name.rfind("epilogue", 0)) {
+        type = llvm::FixedVectorType::get(element_or_scalar_type, vector_width);
     } else {
         type = element_or_scalar_type;
     }
-    builder.CreateAlloca(type, /*ArraySize=*/nullptr, name);
+    create_alloca(name, type);
 }
 
 void IRBuilder::create_unary_op(llvm::Value* value, ast::UnaryOp op) {
@@ -389,6 +469,17 @@ llvm::Value* IRBuilder::get_struct_member_ptr(llvm::Value* struct_variable, int 
     return builder.CreateInBoundsGEP(struct_variable, indices);
 }
 
+void IRBuilder::invert_mask() {
+    if (!mask)
+        throw std::runtime_error("Error: mask is not set\n");
+
+    // Create the vector with all `true` values.
+    create_boolean_constant(1);
+    llvm::Value* one = pop_last_value();
+
+    mask = builder.CreateXor(mask, one);
+}
+
 llvm::Value* IRBuilder::load_to_or_store_from_array(const std::string& id_name,
                                                     llvm::Value* id_value,
                                                     llvm::Value* array,
@@ -396,22 +487,27 @@ llvm::Value* IRBuilder::load_to_or_store_from_array(const std::string& id_name,
     // First, calculate the address of the element in the array.
     llvm::Value* element_ptr = create_inbounds_gep(array, id_value);
 
+    // Find out if the vector code is generated.
+    bool generating_vector_ir = vector_width > 1 && vectorize;
+
     // If the vector code is generated, we need to distinguish between two cases. If the array is
     // indexed indirectly (i.e. not by an induction variable `kernel_id`), create a gather
     // instruction.
-    if (id_name != kernel_id && vectorize && instruction_width > 1) {
-        return maybe_value_to_store
-                   ? builder.CreateMaskedScatter(maybe_value_to_store, element_ptr, llvm::Align())
-                   : builder.CreateMaskedGather(element_ptr, llvm::Align());
+    if (id_name != kernel_id && generating_vector_ir) {
+        return maybe_value_to_store ? builder.CreateMaskedScatter(maybe_value_to_store,
+                                                                  element_ptr,
+                                                                  llvm::Align(),
+                                                                  mask)
+                                    : builder.CreateMaskedGather(element_ptr, llvm::Align(), mask);
     }
 
     llvm::Value* ptr;
-    if (vectorize && instruction_width > 1) {
+    if (generating_vector_ir) {
         // If direct indexing is used during the vectorization, we simply bitcast the scalar pointer
         // to a vector pointer
         llvm::Type* vector_type = llvm::PointerType::get(
             llvm::FixedVectorType::get(element_ptr->getType()->getPointerElementType(),
-                                       instruction_width),
+                                       vector_width),
             /*AddressSpace=*/0);
         ptr = builder.CreateBitCast(element_ptr, vector_type);
     } else {
@@ -420,21 +516,21 @@ llvm::Value* IRBuilder::load_to_or_store_from_array(const std::string& id_name,
     }
 
     if (maybe_value_to_store) {
-        create_store(ptr, maybe_value_to_store);
+        create_store(ptr, maybe_value_to_store, /*masked=*/mask && generating_vector_ir);
         return nullptr;
     } else {
-        return create_load(ptr);
+        return create_load(ptr, /*masked=*/mask && generating_vector_ir);
     }
 }
 
 void IRBuilder::maybe_replicate_value(llvm::Value* value) {
     // If the value should not be vectorised, or it is already a vector, add it to the stack.
-    if (!vectorize || instruction_width == 1 || value->getType()->isVectorTy()) {
+    if (!vectorize || vector_width == 1 || value->getType()->isVectorTy()) {
         value_stack.push_back(value);
     } else {
         // Otherwise, we generate vectorized code inside the loop, so replicate the value to form a
         // vector.
-        llvm::Value* vector_value = builder.CreateVectorSplat(instruction_width, value);
+        llvm::Value* vector_value = builder.CreateVectorSplat(vector_width, value);
         value_stack.push_back(vector_value);
     }
 }

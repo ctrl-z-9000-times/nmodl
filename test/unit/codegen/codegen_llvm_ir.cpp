@@ -16,6 +16,7 @@
 #include "codegen/llvm/codegen_llvm_visitor.hpp"
 #include "parser/nmodl_driver.hpp"
 #include "visitors/checkparent_visitor.hpp"
+#include "visitors/inline_visitor.hpp"
 #include "visitors/neuron_solve_visitor.hpp"
 #include "visitors/solve_block_visitor.hpp"
 #include "visitors/symtab_visitor.hpp"
@@ -34,23 +35,31 @@ using nmodl::parser::NmodlDriver;
 //=============================================================================
 
 std::string run_llvm_visitor(const std::string& text,
-                             bool opt = false,
+                             int opt_level = 0,
                              bool use_single_precision = false,
                              int vector_width = 1,
-                             std::string vec_lib = "none") {
+                             std::string vec_lib = "none",
+                             std::vector<std::string> fast_math_flags = {},
+                             bool nmodl_inline = false) {
     NmodlDriver driver;
     const auto& ast = driver.parse_string(text);
 
     SymtabVisitor().visit_program(*ast);
+    if (nmodl_inline) {
+        InlineVisitor().visit_program(*ast);
+    }
     NeuronSolveVisitor().visit_program(*ast);
     SolveBlockVisitor().visit_program(*ast);
 
     codegen::CodegenLLVMVisitor llvm_visitor(/*mod_filename=*/"unknown",
                                              /*output_dir=*/".",
-                                             opt,
+                                             opt_level,
                                              use_single_precision,
                                              vector_width,
-                                             vec_lib);
+                                             vec_lib,
+                                             /*add_debug_information=*/false,
+                                             fast_math_flags);
+
     llvm_visitor.visit_program(*ast);
     return llvm_visitor.dump_module();
 }
@@ -90,14 +99,14 @@ SCENARIO("Binary expression", "[visitor][llvm]") {
 
         THEN("variables are loaded and add instruction is created") {
             std::string module_string =
-                run_llvm_visitor(nmodl_text, /*opt=*/false, /*use_single_precision=*/true);
+                run_llvm_visitor(nmodl_text, /*opt_level=*/0, /*use_single_precision=*/true);
             std::smatch m;
 
             std::regex rhs(R"(%1 = load float, float\* %b)");
             std::regex lhs(R"(%2 = load float, float\* %a)");
             std::regex res(R"(%3 = fadd float %2, %1)");
 
-            // Check the float values are loaded correctly and added
+            // Check the float values are loaded correctly and added.
             REQUIRE(std::regex_search(module_string, m, rhs));
             REQUIRE(std::regex_search(module_string, m, lhs));
             REQUIRE(std::regex_search(module_string, m, res));
@@ -116,7 +125,7 @@ SCENARIO("Binary expression", "[visitor][llvm]") {
             std::string module_string = run_llvm_visitor(nmodl_text);
             std::smatch m;
 
-            // Check rhs
+            // Check rhs.
             std::regex rr(R"(%1 = load double, double\* %b)");
             std::regex rl(R"(%2 = load double, double\* %a)");
             std::regex x(R"(%3 = fadd double %2, %1)");
@@ -124,7 +133,7 @@ SCENARIO("Binary expression", "[visitor][llvm]") {
             REQUIRE(std::regex_search(module_string, m, rl));
             REQUIRE(std::regex_search(module_string, m, x));
 
-            // Check lhs
+            // Check lhs.
             std::regex lr(R"(%4 = load double, double\* %b)");
             std::regex ll(R"(%5 = load double, double\* %a)");
             std::regex y(R"(%6 = fsub double %5, %4)");
@@ -132,7 +141,7 @@ SCENARIO("Binary expression", "[visitor][llvm]") {
             REQUIRE(std::regex_search(module_string, m, ll));
             REQUIRE(std::regex_search(module_string, m, y));
 
-            // Check result
+            // Check result.
             std::regex res(R"(%7 = fdiv double %6, %3)");
             REQUIRE(std::regex_search(module_string, m, res));
         }
@@ -150,11 +159,34 @@ SCENARIO("Binary expression", "[visitor][llvm]") {
             std::string module_string = run_llvm_visitor(nmodl_text);
             std::smatch m;
 
-            // Check store immediate is created
+            // Check store immediate is created.
             std::regex allocation(R"(%i = alloca double)");
             std::regex assignment(R"(store double 2.0*e\+00, double\* %i)");
             REQUIRE(std::regex_search(module_string, m, allocation));
             REQUIRE(std::regex_search(module_string, m, assignment));
+        }
+    }
+
+    GIVEN("Function with power operator") {
+        std::string nmodl_text = R"(
+            FUNCTION power() {
+                LOCAL i, j
+                i = 2
+                j = 4
+                power = i ^ j
+            }
+        )";
+
+        THEN("'pow' intrinsic is created") {
+            std::string module_string =
+                run_llvm_visitor(nmodl_text, /*opt_level=*/0, /*use_single_precision=*/true);
+            std::smatch m;
+
+            // Check 'pow' intrinsic.
+            std::regex declaration(R"(declare float @llvm\.pow\.f32\(float, float\))");
+            std::regex pow(R"(call float @llvm\.pow\.f32\(float %.*, float %.*\))");
+            REQUIRE(std::regex_search(module_string, m, declaration));
+            REQUIRE(std::regex_search(module_string, m, pow));
         }
     }
 }
@@ -492,8 +524,44 @@ SCENARIO("Function call", "[visitor][llvm]") {
 
     GIVEN("A call to external method") {
         std::string nmodl_text = R"(
-            FUNCTION bar(i) {
-                bar = exp(i)
+            FUNCTION nmodl_ceil(x) {
+                nmodl_ceil = ceil(x)
+            }
+
+            FUNCTION nmodl_cos(x) {
+                nmodl_cos = cos(x)
+            }
+
+            FUNCTION nmodl_exp(x) {
+                nmodl_exp = exp(x)
+            }
+
+            FUNCTION nmodl_fabs(x) {
+                nmodl_fabs = fabs(x)
+            }
+
+            FUNCTION nmodl_floor(x) {
+                nmodl_floor = floor(x)
+            }
+
+            FUNCTION nmodl_log(x) {
+                nmodl_log = log(x)
+            }
+
+            FUNCTION nmodl_log10(x) {
+                nmodl_log10 = log10(x)
+            }
+
+            FUNCTION nmodl_pow(x, y) {
+                nmodl_pow = pow(x, y)
+            }
+
+            FUNCTION nmodl_sin(x) {
+                nmodl_sin = sin(x)
+            }
+
+            FUNCTION nmodl_sqrt(x) {
+                nmodl_sqrt = sqrt(x)
             }
         )";
 
@@ -501,13 +569,49 @@ SCENARIO("Function call", "[visitor][llvm]") {
             std::string module_string = run_llvm_visitor(nmodl_text);
             std::smatch m;
 
-            // Check for intrinsic declaration.
+            // Check for intrinsic declarations.
+            std::regex ceil(R"(declare double @llvm\.ceil\.f64\(double\))");
+            std::regex cos(R"(declare double @llvm\.cos\.f64\(double\))");
             std::regex exp(R"(declare double @llvm\.exp\.f64\(double\))");
+            std::regex fabs(R"(declare double @llvm\.fabs\.f64\(double\))");
+            std::regex floor(R"(declare double @llvm\.floor\.f64\(double\))");
+            std::regex log(R"(declare double @llvm\.log\.f64\(double\))");
+            std::regex log10(R"(declare double @llvm\.log10\.f64\(double\))");
+            std::regex pow(R"(declare double @llvm\.pow\.f64\(double, double\))");
+            std::regex sin(R"(declare double @llvm\.sin\.f64\(double\))");
+            std::regex sqrt(R"(declare double @llvm\.sqrt\.f64\(double\))");
+            REQUIRE(std::regex_search(module_string, m, ceil));
+            REQUIRE(std::regex_search(module_string, m, cos));
             REQUIRE(std::regex_search(module_string, m, exp));
+            REQUIRE(std::regex_search(module_string, m, fabs));
+            REQUIRE(std::regex_search(module_string, m, floor));
+            REQUIRE(std::regex_search(module_string, m, log));
+            REQUIRE(std::regex_search(module_string, m, log10));
+            REQUIRE(std::regex_search(module_string, m, pow));
+            REQUIRE(std::regex_search(module_string, m, sin));
+            REQUIRE(std::regex_search(module_string, m, sqrt));
 
             // Check the correct call is made.
-            std::regex call(R"(call double @llvm\.exp\.f64\(double %[0-9]+\))");
-            REQUIRE(std::regex_search(module_string, m, call));
+            std::regex ceil_call(R"(call double @llvm\.ceil\.f64\(double %[0-9]+\))");
+            std::regex cos_call(R"(call double @llvm\.cos\.f64\(double %[0-9]+\))");
+            std::regex exp_call(R"(call double @llvm\.exp\.f64\(double %[0-9]+\))");
+            std::regex fabs_call(R"(call double @llvm\.fabs\.f64\(double %[0-9]+\))");
+            std::regex floor_call(R"(call double @llvm\.floor\.f64\(double %[0-9]+\))");
+            std::regex log_call(R"(call double @llvm\.log\.f64\(double %[0-9]+\))");
+            std::regex log10_call(R"(call double @llvm\.log10\.f64\(double %[0-9]+\))");
+            std::regex pow_call(R"(call double @llvm\.pow\.f64\(double %[0-9]+, double %[0-9]+\))");
+            std::regex sin_call(R"(call double @llvm\.sin\.f64\(double %[0-9]+\))");
+            std::regex sqrt_call(R"(call double @llvm\.sqrt\.f64\(double %[0-9]+\))");
+            REQUIRE(std::regex_search(module_string, m, ceil_call));
+            REQUIRE(std::regex_search(module_string, m, cos_call));
+            REQUIRE(std::regex_search(module_string, m, exp_call));
+            REQUIRE(std::regex_search(module_string, m, fabs_call));
+            REQUIRE(std::regex_search(module_string, m, floor_call));
+            REQUIRE(std::regex_search(module_string, m, log_call));
+            REQUIRE(std::regex_search(module_string, m, log10_call));
+            REQUIRE(std::regex_search(module_string, m, pow_call));
+            REQUIRE(std::regex_search(module_string, m, sin_call));
+            REQUIRE(std::regex_search(module_string, m, sqrt_call));
         }
     }
 
@@ -942,7 +1046,7 @@ SCENARIO("Vectorised simple kernel", "[visitor][llvm]") {
 
         THEN("a gather instructions is created") {
             std::string module_string = run_llvm_visitor(nmodl_text,
-                                                         /*opt=*/false,
+                                                         /*opt_level=*/0,
                                                          /*use_single_precision=*/false,
                                                          /*vector_width=*/4);
             std::smatch m;
@@ -994,7 +1098,7 @@ SCENARIO("Vectorised simple kernel with ion writes", "[visitor][llvm]") {
 
         THEN("a scatter instructions is created") {
             std::string module_string = run_llvm_visitor(nmodl_text,
-                                                         /*opt=*/false,
+                                                         /*opt_level=*/0,
                                                          /*use_single_precision=*/false,
                                                          /*vector_width=*/4);
             std::smatch m;
@@ -1016,6 +1120,75 @@ SCENARIO("Vectorised simple kernel with ion writes", "[visitor][llvm]") {
                 "call void @llvm\\.masked\\.scatter\\.v4f64\\.v4p0f64\\(<4 x double> %.*, <4 x "
                 "double\\*> %.*, i32 1, <4 x i1> <i1 true, i1 true, i1 true, i1 true>\\)");
             REQUIRE(std::regex_search(module_string, m, scatter));
+        }
+    }
+}
+
+//=============================================================================
+// Vectorised kernel with simple control flow
+//=============================================================================
+
+SCENARIO("Vectorised simple kernel with control flow", "[visitor][llvm]") {
+    GIVEN("A single if/else statement") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX test
+            }
+
+            STATE {
+                y
+            }
+
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+            }
+
+            DERIVATIVE states {
+                IF (y < 0) {
+                    y = y + 7
+                } ELSE {
+                    y = v
+                }
+            }
+        )";
+
+        THEN("masked load and stores are created") {
+            std::string module_string = run_llvm_visitor(nmodl_text,
+                                                         /*opt_level=*/0,
+                                                         /*use_single_precision=*/true,
+                                                         /*vector_width=*/8);
+            std::smatch m;
+
+            // Check masked load/store intrinsics are correctly declared.
+            std::regex masked_load(
+                R"(declare <8 x float> @llvm\.masked\.load\.v8f32\.p0v8f32\(<8 x float>\*, i32 immarg, <8 x i1>, <8 x float>\))");
+            std::regex masked_store(
+                R"(declare void @llvm.masked\.store\.v8f32\.p0v8f32\(<8 x float>, <8 x float>\*, i32 immarg, <8 x i1>\))");
+            REQUIRE(std::regex_search(module_string, m, masked_load));
+            REQUIRE(std::regex_search(module_string, m, masked_store));
+
+            // Check true direction instructions are predicated with mask.
+            // IF (mech->y[id] < 0) {
+            //     mech->y[id] = mech->y[id] + 7
+            std::regex mask(R"(%30 = fcmp olt <8 x float> %.*, zeroinitializer)");
+            std::regex true_load(
+                R"(call <8 x float> @llvm\.masked\.load\.v8f32\.p0v8f32\(<8 x float>\* %.*, i32 1, <8 x i1> %30, <8 x float> undef\))");
+            std::regex true_store(
+                R"(call void @llvm\.masked\.store\.v8f32\.p0v8f32\(<8 x float> %.*, <8 x float>\* %.*, i32 1, <8 x i1> %30\))");
+            REQUIRE(std::regex_search(module_string, m, mask));
+            REQUIRE(std::regex_search(module_string, m, true_load));
+            REQUIRE(std::regex_search(module_string, m, true_store));
+
+            // Check false direction instructions are predicated with inverted mask.
+            // } ELSE {
+            //     mech->y[id] = v
+            // }
+            std::regex inverted_mask(
+                R"(%47 = xor <8 x i1> %30, <i1 true, i1 true, i1 true, i1 true, i1 true, i1 true, i1 true, i1 true>)");
+            std::regex false_load(
+                R"(call <8 x float> @llvm\.masked\.load\.v8f32\.p0v8f32\(<8 x float>\* %v, i32 1, <8 x i1> %47, <8 x float> undef\))");
+            std::regex false_store(
+                R"(call void @llvm\.masked\.store\.v8f32\.p0v8f32\(<8 x float> %.*, <8 x float>\* %.*, i32 1, <8 x i1> %47\))");
         }
     }
 }
@@ -1153,7 +1326,7 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
 
             // Check exponential intrinsic is created.
             std::string no_library_module_str = run_llvm_visitor(nmodl_text,
-                                                                 /*opt=*/false,
+                                                                 /*opt_level=*/0,
                                                                  /*use_single_precision=*/false,
                                                                  /*vector_width=*/2);
             std::regex exp_decl(R"(declare <2 x double> @llvm\.exp\.v2f64\(<2 x double>\))");
@@ -1161,10 +1334,10 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
             REQUIRE(std::regex_search(no_library_module_str, m, exp_decl));
             REQUIRE(std::regex_search(no_library_module_str, m, exp_call));
 
-#ifndef LLVM_VERSION_LESS_THAN_13
+#if LLVM_VERSION_MAJOR >= 13
             // Check exponential calls are replaced with calls to SVML library.
             std::string svml_library_module_str = run_llvm_visitor(nmodl_text,
-                                                                   /*opt=*/false,
+                                                                   /*opt_level=*/0,
                                                                    /*use_single_precision=*/false,
                                                                    /*vector_width=*/2,
                                                                    /*vec_lib=*/"SVML");
@@ -1177,7 +1350,7 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
             // Check that supported exponential calls are replaced with calls to MASSV library (i.e.
             // operating on vector of width 2).
             std::string massv2_library_module_str = run_llvm_visitor(nmodl_text,
-                                                                     /*opt=*/false,
+                                                                     /*opt_level=*/0,
                                                                      /*use_single_precision=*/false,
                                                                      /*vector_width=*/2,
                                                                      /*vec_lib=*/"MASSV");
@@ -1189,7 +1362,7 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
 
             // Check no replacement for MASSV happens for non-supported vector widths.
             std::string massv4_library_module_str = run_llvm_visitor(nmodl_text,
-                                                                     /*opt=*/false,
+                                                                     /*opt_level=*/0,
                                                                      /*use_single_precision=*/false,
                                                                      /*vector_width=*/4,
                                                                      /*vec_lib=*/"MASSV");
@@ -1199,7 +1372,7 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
             // Check correct replacement of @llvm.exp.v4f32 into @vexpf when using Accelerate.
             std::string accelerate_library_module_str =
                 run_llvm_visitor(nmodl_text,
-                                 /*opt=*/false,
+                                 /*opt_level=*/0,
                                  /*use_single_precision=*/true,
                                  /*vector_width=*/4,
                                  /*vec_lib=*/"Accelerate");
@@ -1209,7 +1382,68 @@ SCENARIO("Vector library calls", "[visitor][llvm][vector_lib]") {
             REQUIRE(std::regex_search(accelerate_library_module_str, m, accelerate_exp_decl));
             REQUIRE(std::regex_search(accelerate_library_module_str, m, accelerate_exp_call));
             REQUIRE(!std::regex_search(accelerate_library_module_str, m, fexp_call));
+
+            // Check correct replacement of @llvm.exp.v2f64 into @_ZGV?N?v_exp when using SLEEF.
+            std::string sleef_library_module_str = run_llvm_visitor(nmodl_text,
+                                                                    /*opt_level=*/0,
+                                                                    /*use_single_precision=*/false,
+                                                                    /*vector_width=*/2,
+                                                                    /*vec_lib=*/"SLEEF");
+#if defined(__arm64__) || defined(__aarch64__)
+            std::regex sleef_exp_decl(R"(declare <2 x double> @_ZGVnN2v_exp\(<2 x double>\))");
+            std::regex sleef_exp_call(R"(call <2 x double> @_ZGVnN2v_exp\(<2 x double> .*\))");
+#else
+            std::regex sleef_exp_decl(R"(declare <2 x double> @_ZGVbN2v_exp\(<2 x double>\))");
+            std::regex sleef_exp_call(R"(call <2 x double> @_ZGVbN2v_exp\(<2 x double> .*\))");
 #endif
+            REQUIRE(std::regex_search(sleef_library_module_str, m, sleef_exp_decl));
+            REQUIRE(std::regex_search(sleef_library_module_str, m, sleef_exp_call));
+            REQUIRE(!std::regex_search(sleef_library_module_str, m, fexp_call));
+
+            // Check the replacements when using Darwin's libsystem_m.
+            std::string libsystem_m_library_module_str =
+                run_llvm_visitor(nmodl_text,
+                                 /*opt_level=*/0,
+                                 /*use_single_precision=*/true,
+                                 /*vector_width=*/4,
+                                 /*vec_lib=*/"libsystem_m");
+            std::regex libsystem_m_exp_decl(R"(declare <4 x float> @_simd_exp_f4\(<4 x float>\))");
+            std::regex libsystem_m_exp_call(R"(call <4 x float> @_simd_exp_f4\(<4 x float> .*\))");
+            REQUIRE(std::regex_search(libsystem_m_library_module_str, m, libsystem_m_exp_decl));
+            REQUIRE(std::regex_search(libsystem_m_library_module_str, m, libsystem_m_exp_call));
+            REQUIRE(!std::regex_search(libsystem_m_library_module_str, m, fexp_call));
+#endif
+        }
+    }
+}
+
+//=============================================================================
+// Fast math flags
+//=============================================================================
+
+SCENARIO("Fast math flags", "[visitor][llvm]") {
+    GIVEN("A function to produce fma and specified math flags") {
+        std::string nmodl_text = R"(
+            FUNCTION foo(a, b, c) {
+                foo = (a * b) + c
+            }
+        )";
+
+        THEN("instructions are generated with the flags set") {
+            std::string module_string =
+                run_llvm_visitor(nmodl_text,
+                                 /*opt_level=*/3,
+                                 /*use_single_precision=*/false,
+                                 /*vector_width=*/1,
+                                 /*vec_lib=*/"none",
+                                 /*fast_math_flags=*/{"nnan", "contract", "afn"});
+            std::smatch m;
+
+            // Check flags for produced 'fmul' and 'fadd' instructions.
+            std::regex fmul(R"(fmul nnan contract afn double %.*, %.*)");
+            std::regex fadd(R"(fadd nnan contract afn double %.*, %.*)");
+            REQUIRE(std::regex_search(module_string, m, fmul));
+            REQUIRE(std::regex_search(module_string, m, fadd));
         }
     }
 }
@@ -1228,13 +1462,66 @@ SCENARIO("Dead code removal", "[visitor][llvm][opt]") {
         )";
 
         THEN("with optimisation enabled, all ops are eliminated") {
-            std::string module_string = run_llvm_visitor(nmodl_text, true);
+            std::string module_string = run_llvm_visitor(nmodl_text, /*opt_level=*/3);
             std::smatch m;
 
-            // Check if the values are optimised out
+            // Check if the values are optimised out.
             std::regex empty_proc(
-                R"(define i32 @add\(double %a[0-9].*, double %b[0-9].*\) \{\n(\s)*ret i32 0\n\})");
+                R"(define i32 @add\(double %a[0-9].*, double %b[0-9].*\).*\{\n(\s)*ret i32 0\n\})");
             REQUIRE(std::regex_search(module_string, m, empty_proc));
+        }
+    }
+}
+
+//=============================================================================
+// Inlining: remove inline code blocks
+//=============================================================================
+
+SCENARIO("Removal of inlined functions and procedures", "[visitor][llvm][inline]") {
+    GIVEN("Simple breakpoint block calling a function and a procedure") {
+        std::string nmodl_text = R"(
+            NEURON {
+                SUFFIX test_inline
+                RANGE a, b, s
+            }
+            ASSIGNED {
+                a
+                b
+                s
+            }
+            PROCEDURE test_add(a, b) {
+                LOCAL i
+                i = a + b
+            }
+            FUNCTION test_sub(a, b) {
+                test_sub = a - b
+            }
+            BREAKPOINT {
+                SOLVE states METHOD cnexp
+            }
+            DERIVATIVE states {
+                a = 1
+                b = 2
+                test_add(a, b)
+                s = test_sub(a, b)
+            }
+        )";
+
+        THEN("when the code is inlined the procedure and function blocks are removed") {
+            std::string module_string = run_llvm_visitor(nmodl_text,
+                                                         /*opt_level=*/0,
+                                                         /*use_single_precision=*/false,
+                                                         /*vector_width=*/1,
+                                                         /*vec_lib=*/"none",
+                                                         /*fast_math_flags=*/{},
+                                                         /*nmodl_inline=*/true);
+            std::smatch m;
+
+            // Check if the procedure and function declarations are removed
+            std::regex add_proc(R"(define i32 @test_add\(double %a[0-9].*, double %b[0-9].*\))");
+            REQUIRE(!std::regex_search(module_string, m, add_proc));
+            std::regex sub_func(R"(define double @test_sub\(double %a[0-9].*, double %b[0-9].*\))");
+            REQUIRE(!std::regex_search(module_string, m, sub_func));
         }
     }
 }

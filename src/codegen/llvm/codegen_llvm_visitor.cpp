@@ -6,21 +6,20 @@
  *************************************************************************/
 
 #include "codegen/llvm/codegen_llvm_visitor.hpp"
+#include "codegen/llvm/llvm_utils.hpp"
 
 #include "ast/all.hpp"
 #include "visitors/rename_visitor.hpp"
 #include "visitors/visitor_utils.hpp"
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Type.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
-#include "llvm/Support/ToolOutputFile.h"
 
-#ifndef LLVM_VERSION_LESS_THAN_13
+#if LLVM_VERSION_MAJOR >= 13
 #include "llvm/CodeGen/ReplaceWithVeclib.h"
 #endif
 
@@ -54,12 +53,81 @@ static bool can_vectorize(const ast::CodegenForStatement& statement, symtab::Sym
             return false;
     }
 
-    // Check there is no control flow in the kernel.
-    const std::vector<ast::AstNodeType> unsupported_nodes = {ast::AstNodeType::IF_STATEMENT};
-    const auto& collected = collect_nodes(statement, unsupported_nodes);
+    // Check for simple supported control flow in the kernel (single if/else statement).
+    const std::vector<ast::AstNodeType> supported_control_flow = {ast::AstNodeType::IF_STATEMENT};
+    const auto& supported = collect_nodes(statement, supported_control_flow);
 
-    return collected.empty();
+    // Check for unsupported control flow statements.
+    const std::vector<ast::AstNodeType> unsupported_nodes = {ast::AstNodeType::ELSE_IF_STATEMENT};
+    const auto& unsupported = collect_nodes(statement, unsupported_nodes);
+
+    return unsupported.empty() && supported.size() <= 1;
 }
+
+#if LLVM_VERSION_MAJOR >= 13
+void CodegenLLVMVisitor::add_vectorizable_functions_from_vec_lib(llvm::TargetLibraryInfoImpl& tli,
+                                                                 llvm::Triple& triple) {
+    // Since LLVM does not support SLEEF as a vector library yet, process it separately.
+    if (vector_library == "SLEEF") {
+// clang-format off
+#define FIXED(w) llvm::ElementCount::getFixed(w)
+// clang-format on
+#define DISPATCH(func, vec_func, width) {func, vec_func, width},
+
+        // Populate function definitions of only exp and pow (for now)
+        const llvm::VecDesc aarch64_functions[] = {
+            // clang-format off
+            DISPATCH("llvm.exp.f32", "_ZGVnN4v_expf", FIXED(4))
+            DISPATCH("llvm.exp.f64", "_ZGVnN2v_exp", FIXED(2))
+            DISPATCH("llvm.pow.f32", "_ZGVnN4vv_powf", FIXED(4))
+            DISPATCH("llvm.pow.f64", "_ZGVnN2vv_pow", FIXED(2))
+            // clang-format on
+        };
+        const llvm::VecDesc x86_functions[] = {
+            // clang-format off
+            DISPATCH("llvm.exp.f64", "_ZGVbN2v_exp", FIXED(2))
+            DISPATCH("llvm.exp.f64", "_ZGVdN4v_exp", FIXED(4))
+            DISPATCH("llvm.exp.f64", "_ZGVeN8v_exp", FIXED(8))
+            DISPATCH("llvm.pow.f64", "_ZGVbN2vv_pow", FIXED(2))
+            DISPATCH("llvm.pow.f64", "_ZGVdN4vv_pow", FIXED(4))
+            DISPATCH("llvm.pow.f64", "_ZGVeN8vv_pow", FIXED(8))
+            // clang-format on
+        };
+#undef DISPATCH
+
+        if (triple.isAArch64()) {
+            tli.addVectorizableFunctions(aarch64_functions);
+        }
+        if (triple.isX86() && triple.isArch64Bit()) {
+            tli.addVectorizableFunctions(x86_functions);
+        }
+
+    } else {
+        // A map to query vector library by its string value.
+        using VecLib = llvm::TargetLibraryInfoImpl::VectorLibrary;
+        static const std::map<std::string, VecLib> llvm_supported_vector_libraries = {
+            {"Accelerate", VecLib::Accelerate},
+            {"libmvec", VecLib::LIBMVEC_X86},
+            {"libsystem_m", VecLib ::DarwinLibSystemM},
+            {"MASSV", VecLib::MASSV},
+            {"none", VecLib::NoLibrary},
+            {"SVML", VecLib::SVML}};
+        const auto& library = llvm_supported_vector_libraries.find(vector_library);
+        if (library == llvm_supported_vector_libraries.end())
+            throw std::runtime_error("Error: unknown vector library - " + vector_library + "\n");
+
+        // Add vectorizable functions to the target library info.
+        switch (library->second) {
+        case VecLib::LIBMVEC_X86:
+            if (!triple.isX86() || !triple.isArch64Bit())
+                break;
+        default:
+            tli.addVectorizableFunctionsFromVecLib(library->second);
+            break;
+        }
+    }
+}
+#endif
 
 llvm::Value* CodegenLLVMVisitor::accept_and_get(const std::shared_ptr<ast::Node>& node) {
     node->accept(*this);
@@ -160,6 +228,27 @@ void CodegenLLVMVisitor::create_printf_call(const ast::ExpressionVector& argumen
     argument_values.reserve(arguments.size());
     create_function_call_arguments(arguments, argument_values);
     ir_builder.create_function_call(printf, argument_values, /*use_result=*/false);
+}
+
+void CodegenLLVMVisitor::create_vectorized_control_flow_block(const ast::IfStatement& node) {
+    // Get the true mask from the condition statement.
+    llvm::Value* true_mask = accept_and_get(node.get_condition());
+
+    // Process the true block.
+    ir_builder.set_mask(true_mask);
+    node.get_statement_block()->accept(*this);
+
+    // Note: by default, we do not support kernels with complicated control flow. This is checked
+    // prior to visiting 'CodegenForStatement`.
+    const auto& elses = node.get_elses();
+    if (elses) {
+        // If `else` statement exists, invert the mask and proceed with code generation.
+        ir_builder.invert_mask();
+        elses->get_statement_block()->accept(*this);
+    }
+
+    // Clear the mask value.
+    ir_builder.clear_mask();
 }
 
 void CodegenLLVMVisitor::find_kernel_names(std::vector<std::string>& container) {
@@ -325,7 +414,8 @@ llvm::Value* CodegenLLVMVisitor::read_variable(const ast::VarName& node) {
     const auto& identifier = node.get_name();
 
     if (identifier->is_name()) {
-        return ir_builder.create_load(node.get_node_name());
+        return ir_builder.create_load(node.get_node_name(),
+                                      /*masked=*/ir_builder.generates_predicated_ir());
     }
 
     if (identifier->is_indexed_name()) {
@@ -341,25 +431,6 @@ llvm::Value* CodegenLLVMVisitor::read_variable(const ast::VarName& node) {
 
     throw std::runtime_error("Error: the type of '" + node.get_node_name() +
                              "' is not supported\n");
-}
-
-void CodegenLLVMVisitor::run_ir_opt_passes() {
-    // Run some common optimisation passes that are commonly suggested.
-    opt_pm.add(llvm::createInstructionCombiningPass());
-    opt_pm.add(llvm::createReassociatePass());
-    opt_pm.add(llvm::createGVNPass());
-    opt_pm.add(llvm::createCFGSimplificationPass());
-
-    // Initialize pass manager.
-    opt_pm.doInitialization();
-
-    // Iterate over all functions and run the optimisation passes.
-    auto& functions = module->getFunctionList();
-    for (auto& function: functions) {
-        llvm::verifyFunction(function);
-        opt_pm.run(function);
-    }
-    opt_pm.doFinalization();
 }
 
 void CodegenLLVMVisitor::write_to_variable(const ast::VarName& node, llvm::Value* value) {
@@ -522,8 +593,8 @@ void CodegenLLVMVisitor::visit_codegen_atomic_statement(const ast::CodegenAtomic
 //  | <code after for loop>     |
 //  +---------------------------+
 void CodegenLLVMVisitor::visit_codegen_for_statement(const ast::CodegenForStatement& node) {
-    // Disable vector code generation for condition and increment blocks.
-    ir_builder.stop_vectorization();
+    // Condition and increment blocks must be scalar.
+    ir_builder.generate_scalar_ir();
 
     // Get the current and the next blocks within the function.
     llvm::BasicBlock* curr_block = ir_builder.get_current_block();
@@ -538,21 +609,11 @@ void CodegenLLVMVisitor::visit_codegen_for_statement(const ast::CodegenForStatem
     llvm::BasicBlock* for_inc = llvm::BasicBlock::Create(*context, /*Name=*/"for.inc", func, next);
     llvm::BasicBlock* exit = llvm::BasicBlock::Create(*context, /*Name=*/"for.exit", func, next);
 
-    // Check if the kernel can be vectorised. If not, generate scalar code.
-    if (!can_vectorize(node, program_symtab)) {
-        logger->info("Cannot vectorise the for loop in '" + ir_builder.get_current_function_name() +
-                     "'");
-        logger->info("Generating scalar code...");
-        vector_width = 1;
-        ir_builder.generate_scalar_code();
-    }
-
-    // First, initialise the loop in the same basic block. This block is optional. Also, generate
-    // scalar code if processing the remainder of the loop.
-    if (node.get_initialization())
-        node.get_initialization()->accept(*this);
-    else
-        ir_builder.generate_scalar_code();
+    // First, initialize the loop in the same basic block. If processing the remainder of the loop,
+    // no initialization happens.
+    const auto& main_loop_initialization = node.get_initialization();
+    if (main_loop_initialization)
+        main_loop_initialization->accept(*this);
 
     // Branch to condition basic block and insert condition code there.
     ir_builder.create_br_and_set_insertion_point(for_cond);
@@ -561,34 +622,36 @@ void CodegenLLVMVisitor::visit_codegen_for_statement(const ast::CodegenForStatem
     llvm::Value* cond = accept_and_get(node.get_condition());
     llvm::BranchInst* loop_br = ir_builder.create_cond_br(cond, for_body, exit);
     ir_builder.set_loop_metadata(loop_br);
+    ir_builder.set_insertion_point(for_body);
+
+    // If not processing remainder of the loop, start vectorization.
+    if (vector_width > 1 && main_loop_initialization)
+        ir_builder.generate_vector_ir();
 
     // Generate code for the loop body and create the basic block for the increment.
-    ir_builder.set_insertion_point(for_body);
-    ir_builder.start_vectorization();
     const auto& statement_block = node.get_statement_block();
     statement_block->accept(*this);
-    ir_builder.stop_vectorization();
+    ir_builder.generate_scalar_ir();
     ir_builder.create_br_and_set_insertion_point(for_inc);
-    // Process increment.
+
+    // Process the increment.
     node.get_increment()->accept(*this);
 
     // Create a branch to condition block, then generate exit code out of the loop.
     ir_builder.create_br(for_cond);
     ir_builder.set_insertion_point(exit);
-    ir_builder.generate_vectorized_code();
-    ir_builder.start_vectorization();
 }
 
 
 void CodegenLLVMVisitor::visit_codegen_function(const ast::CodegenFunction& node) {
     const auto& name = node.get_node_name();
     const auto& arguments = node.get_arguments();
-    llvm::Function* func = module->getFunction(name);
-    ir_builder.set_function(func);
 
     // Create the entry basic block of the function/procedure and point the local named values table
     // to the symbol table.
+    llvm::Function* func = module->getFunction(name);
     ir_builder.create_block_and_set_insertion_point(func);
+    ir_builder.set_function(func);
 
     // When processing a function, it returns a value named <function_name> in NMODL. Therefore, we
     // first run RenameVisitor to rename it into ret_<function_name>. This will aid in avoiding
@@ -601,12 +664,12 @@ void CodegenLLVMVisitor::visit_codegen_function(const ast::CodegenFunction& node
     // Allocate parameters on the stack and add them to the symbol table.
     ir_builder.allocate_function_arguments(func, arguments);
 
-    // Process function or procedure body. If the function is a compute kernel, then set the
-    // corresponding flags. If so, the return statement is handled in a separate visitor.
-    if (is_kernel_function(name)) {
-        ir_builder.start_vectorization();
+    // Process function or procedure body. If the function is a compute kernel, enable
+    // vectorization. If so, the return statement is handled in a separate visitor.
+    if (vector_width > 1 && is_kernel_function(name)) {
+        ir_builder.generate_vector_ir();
         block->accept(*this);
-        ir_builder.stop_vectorization();
+        ir_builder.generate_scalar_ir();
     } else {
         block->accept(*this);
     }
@@ -676,6 +739,12 @@ void CodegenLLVMVisitor::visit_function_call(const ast::FunctionCall& node) {
 }
 
 void CodegenLLVMVisitor::visit_if_statement(const ast::IfStatement& node) {
+    // If vectorizing the compute kernel with control flow, process it separately.
+    if (vector_width > 1 && ir_builder.vectorizing()) {
+        create_vectorized_control_flow_block(node);
+        return;
+    }
+
     // Get the current and the next blocks within the function.
     llvm::BasicBlock* curr_block = ir_builder.get_current_block();
     llvm::BasicBlock* next = curr_block->getNextNode();
@@ -791,53 +860,41 @@ void CodegenLLVMVisitor::visit_program(const ast::Program& node) {
         throw std::runtime_error("Error: incorrect IR has been generated!\n" + ostream.str());
     }
 
-    if (opt_passes) {
+    if (opt_level_ir) {
         logger->info("Running LLVM optimisation passes");
-        run_ir_opt_passes();
+        utils::initialise_optimisation_passes();
+        utils::optimise_module(*module, opt_level_ir);
     }
 
-    // Optionally, replace LLVM's maths intrinsics with vector library calls.
-    if (vector_width > 1 && vector_library != llvm::TargetLibraryInfoImpl::NoLibrary) {
-#ifdef LLVM_VERSION_LESS_THAN_13
+    // Optionally, replace LLVM math intrinsics with vector library calls.
+    if (vector_width > 1) {
+#if LLVM_VERSION_MAJOR < 13
         logger->warn(
             "This version of LLVM does not support replacement of LLVM intrinsics with vector "
             "library calls");
 #else
-        // First, get the target library information.
+        // First, get the target library information and add vectorizable functions for the
+        // specified vector library.
         llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
         llvm::TargetLibraryInfoImpl target_lib_info = llvm::TargetLibraryInfoImpl(triple);
+        add_vectorizable_functions_from_vec_lib(target_lib_info, triple);
 
-        // Populate target library information with vectorisable functions. Since libmvec is
-        // supported for x86_64 only, have a check to catch other architectures.
-        if (vector_library != llvm::TargetLibraryInfoImpl::LIBMVEC_X86 ||
-            (triple.isX86() && triple.isArch64Bit())) {
-            target_lib_info.addVectorizableFunctionsFromVecLib(vector_library);
-        }
-
-        // Run the codegen optimisation passes that replace maths intrinsics.
-        codegen_pm.add(new llvm::TargetLibraryInfoWrapperPass(target_lib_info));
-        codegen_pm.add(new llvm::ReplaceWithVeclibLegacy);
-        codegen_pm.doInitialization();
+        // Run passes that replace math intrinsics.
+        llvm::legacy::FunctionPassManager fpm(module.get());
+        fpm.add(new llvm::TargetLibraryInfoWrapperPass(target_lib_info));
+        fpm.add(new llvm::ReplaceWithVeclibLegacy);
+        fpm.doInitialization();
         for (auto& function: module->getFunctionList()) {
             if (!function.isDeclaration())
-                codegen_pm.run(function);
+                fpm.run(function);
         }
-        codegen_pm.doFinalization();
+        fpm.doFinalization();
 #endif
     }
 
     // If the output directory is specified, save the IR to .ll file.
-    // \todo: Consider saving the generated LLVM IR to bytecode (.bc) file instead.
     if (output_dir != ".") {
-        std::error_code error_code;
-        std::unique_ptr<llvm::ToolOutputFile> out = std::make_unique<llvm::ToolOutputFile>(
-            output_dir + "/" + mod_filename + ".ll", error_code, llvm::sys::fs::OF_Text);
-        if (error_code)
-            throw std::runtime_error("Error: " + error_code.message());
-
-        std::unique_ptr<llvm::AssemblyAnnotationWriter> annotator;
-        module->print(out->os(), annotator.get());
-        out->keep();
+        utils::save_ir_to_ll_file(*module, output_dir + "/" + mod_filename);
     }
 
     logger->debug("Dumping generated IR...\n" + dump_module());

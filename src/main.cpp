@@ -171,9 +171,6 @@ int main(int argc, const char* argv[]) {
     /// use single precision floating-point types
     bool llvm_float_type(false);
 
-    /// run llvm optimisation passes
-    bool llvm_ir_opt_passes(false);
-
     /// llvm vector width
     int llvm_vec_width = 1;
 
@@ -183,8 +180,14 @@ int main(int argc, const char* argv[]) {
     /// disable debug information generation for the IR
     bool disable_debug_information(false);
 
+    /// fast math flags for LLVM backend
+    std::vector<std::string> llvm_fast_math_flags;
+
     /// run llvm benchmark
     bool run_llvm_benchmark(false);
+
+    /// do not assume that instance struct fields do not alias
+    bool llvm_assume_alias(false);
 
     /// optimisation level for IR generation
     int llvm_opt_level_ir = 0;
@@ -201,8 +204,8 @@ int main(int argc, const char* argv[]) {
     /// the number of repeated experiments for the benchmarking
     int num_experiments = 100;
 
-    /// specify the backend for LLVM IR to target
-    std::string backend = "default";
+    /// specify the cpu for LLVM IR to target
+    std::string cpu = "default";
 #endif
 
     app.get_formatter()->column_width(40);
@@ -318,27 +321,30 @@ int main(int argc, const char* argv[]) {
     llvm_opt->add_flag("--disable-debug-info",
                        disable_debug_information,
                        "Disable debug information ({})"_format(disable_debug_information))->ignore_case();
-    llvm_opt->add_flag("--opt",
-                       llvm_ir_opt_passes,
-                       "Run few common LLVM IR optimisation passes ({})"_format(llvm_ir_opt_passes))->ignore_case();
+    llvm_opt->add_option("--opt-level-ir",
+                              llvm_opt_level_ir,
+                              "LLVM IR optimisation level (O{})"_format(llvm_opt_level_ir))->ignore_case()->check(CLI::IsMember({"0", "1", "2", "3"}));
     llvm_opt->add_flag("--single-precision",
                        llvm_float_type,
                        "Use single precision floating-point types ({})"_format(llvm_float_type))->ignore_case();
+    llvm_opt->add_flag("--assume-may-alias",
+                       llvm_assume_alias,
+                       "Assume instance struct fields may alias ({})"_format(llvm_assume_alias))->ignore_case();
     llvm_opt->add_option("--vector-width",
         llvm_vec_width,
         "LLVM explicit vectorisation width ({})"_format(llvm_vec_width))->ignore_case();
     llvm_opt->add_option("--veclib",
                          vector_library,
-                         "Vector library for maths functions ({})"_format(vector_library))->check(CLI::IsMember({"Accelerate", "libmvec", "MASSV", "SVML", "none"}));
+                         "Vector library for maths functions ({})"_format(vector_library))->check(CLI::IsMember({"Accelerate", "libsystem_m", "libmvec", "MASSV", "SLEEF", "SVML", "none"}));
+    llvm_opt->add_option("--fmf",
+                         llvm_fast_math_flags,
+                         "Fast math flags for floating-point optimizations (none)")->check(CLI::IsMember({"afn", "arcp", "contract", "ninf", "nnan", "nsz", "reassoc", "fast"}));
 
     // LLVM IR benchmark options.
     auto benchmark_opt = app.add_subcommand("benchmark", "LLVM benchmark option")->ignore_case();
     benchmark_opt->add_flag("--run",
                             run_llvm_benchmark,
                             "Run LLVM benchmark ({})"_format(run_llvm_benchmark))->ignore_case();
-    benchmark_opt->add_option("--opt-level-ir",
-                              llvm_opt_level_ir,
-                              "LLVM IR optimisation level (O{})"_format(llvm_opt_level_ir))->ignore_case()->check(CLI::IsMember({"0", "1", "2", "3"}));
     benchmark_opt->add_option("--opt-level-codegen",
                               llvm_opt_level_codegen,
                               "Machine code optimisation level (O{})"_format(llvm_opt_level_codegen))->ignore_case()->check(CLI::IsMember({"0", "1", "2", "3"}));
@@ -351,9 +357,9 @@ int main(int argc, const char* argv[]) {
     benchmark_opt->add_option("--repeat",
                               num_experiments,
                               "Number of experiments for benchmarking ({})"_format(num_experiments))->ignore_case();
-    benchmark_opt->add_option("--backend",
-                       backend,
-                       "Target's backend ({})"_format(backend))->ignore_case()->check(CLI::IsMember({"avx2", "default", "sse2"}));
+    benchmark_opt->add_option("--cpu",
+                       cpu,
+                       "Target's backend ({})"_format(cpu))->ignore_case();
 #endif
     // clang-format on
 
@@ -652,14 +658,20 @@ int main(int argc, const char* argv[]) {
 
 #ifdef NMODL_LLVM_BACKEND
             if (llvm_ir || run_llvm_benchmark) {
+                // If benchmarking, we want to optimize the IR with target information and not in
+                // LLVM visitor.
+                int llvm_opt_level = run_llvm_benchmark ? 0 : llvm_opt_level_ir;
+
                 logger->info("Running LLVM backend code generator");
                 CodegenLLVMVisitor visitor(modfile,
                                            output_dir,
-                                           llvm_ir_opt_passes,
+                                           llvm_opt_level,
                                            llvm_float_type,
                                            llvm_vec_width,
                                            vector_library,
-                                           !disable_debug_information);
+                                           !disable_debug_information,
+                                           llvm_fast_math_flags,
+                                           llvm_assume_alias);
                 visitor.visit_program(*ast);
                 ast_to_nmodl(*ast, filepath("llvm", "mod"));
                 ast_to_json(*ast, filepath("llvm", "json"));
@@ -672,7 +684,7 @@ int main(int argc, const char* argv[]) {
                                                        shared_lib_paths,
                                                        num_experiments,
                                                        instance_size,
-                                                       backend,
+                                                       cpu,
                                                        llvm_opt_level_ir,
                                                        llvm_opt_level_codegen);
                     benchmark.run(ast);

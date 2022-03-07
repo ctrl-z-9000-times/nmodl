@@ -10,6 +10,7 @@
 
 #include "ast/all.hpp"
 #include "codegen/codegen_helper_visitor.hpp"
+#include "symtab/symbol_table.hpp"
 #include "utils/logger.hpp"
 #include "visitors/rename_visitor.hpp"
 #include "visitors/visitor_utils.hpp"
@@ -18,6 +19,8 @@ namespace nmodl {
 namespace codegen {
 
 using namespace fmt::literals;
+
+using symtab::syminfo::Status;
 
 /// initialize static member variables
 const ast::AstNodeType CodegenLLVMHelperVisitor::INTEGER_TYPE = ast::AstNodeType::INTEGER;
@@ -198,6 +201,7 @@ void CodegenLLVMHelperVisitor::create_function_for_node(ast::Block& node) {
     }
     codegen_functions.push_back(function);
 }
+
 /**
  * \note : Order of variables is not important but we assume all pointers
  * are added first and then scalar variables like t, dt, second_order etc.
@@ -251,7 +255,7 @@ static void append_statements_from_block(ast::StatementVector& statements,
     for (const auto& statement: block_statements) {
         const auto& expression_statement = std::dynamic_pointer_cast<ast::ExpressionStatement>(
             statement);
-        if (!expression_statement->get_expression()->is_solve_block())
+        if (!expression_statement || !expression_statement->get_expression()->is_solve_block())
             statements.push_back(statement);
     }
 }
@@ -775,6 +779,21 @@ void CodegenLLVMHelperVisitor::visit_nrn_state_block(ast::NrnStateBlock& node) {
     std::cout << nmodl::to_nmodl(function) << std::endl;
 }
 
+void CodegenLLVMHelperVisitor::remove_inlined_nodes(ast::Program& node) {
+    auto program_symtab = node.get_model_symbol_table();
+    const auto& func_proc_nodes =
+        collect_nodes(node, {ast::AstNodeType::FUNCTION_BLOCK, ast::AstNodeType::PROCEDURE_BLOCK});
+    std::unordered_set<ast::Node*> nodes_to_erase;
+    for (const auto& ast_node: func_proc_nodes) {
+        if (program_symtab->lookup(ast_node->get_node_name())
+                .get()
+                ->has_all_status(Status::inlined)) {
+            nodes_to_erase.insert(static_cast<ast::Node*>(ast_node.get()));
+        }
+    }
+    node.erase_node(nodes_to_erase);
+}
+
 void CodegenLLVMHelperVisitor::visit_program(ast::Program& node) {
     /// run codegen helper visitor to collect information
     CodegenHelperVisitor v;
@@ -784,6 +803,7 @@ void CodegenLLVMHelperVisitor::visit_program(ast::Program& node) {
     node.emplace_back_node(instance_var_helper.instance);
 
     logger->info("Running CodegenLLVMHelperVisitor");
+    remove_inlined_nodes(node);
     node.visit_children(*this);
     for (auto& fun: codegen_functions) {
         node.emplace_back_node(fun);
