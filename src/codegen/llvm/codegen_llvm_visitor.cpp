@@ -915,14 +915,16 @@ void CodegenLLVMVisitor::print_mechanism_range_var_structure() {
     printer->start_block("struct {} "_format(mod_filename + instance_struct_type_name));
     for (const auto& variable: instance_var_helper.instance->get_codegen_vars()) {
         auto is_pointer = variable->get_is_pointer();
+        auto name = to_nmodl(variable->get_name());
+        auto qualifier = is_constant_variable(name) ? k_const() : "";
         auto nmodl_type = variable->get_type()->get_type();
         auto pointer = is_pointer ? "*" : "";
         auto var_name = variable->get_node_name();
         switch (nmodl_type) {
-#define DISPATCH(type, c_type)                                                   \
-    case type:                                                                   \
-        printer->add_line("{}{} {}{};"_format(                                   \
-            c_type, pointer, is_pointer ? ptr_type_qualifier() : "", var_name)); \
+#define DISPATCH(type, c_type)                                                              \
+    case type:                                                                              \
+        printer->add_line("{}{}{} {}{};"_format(                                            \
+            qualifier, c_type, pointer, is_pointer ? ptr_type_qualifier() : "", var_name)); \
         break;
 
             DISPATCH(ast::AstNodeType::DOUBLE, "double");
