@@ -16,6 +16,13 @@
 #include "fmt/format.h"
 #include "utils/common_utils.hpp"
 
+#include "llvm/Support/Host.h"
+#include "llvm/Support/TargetRegistry.h"
+#include "llvm/Support/TargetSelect.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/Target/TargetMachine.h"
+// #include "Target/NVPTX/NVPTXTargetMachine.h"
+
 using fmt::literals::operator""_format;
 
 namespace nmodl {
@@ -81,6 +88,28 @@ void print_ptx_to_file(const std::string& ptx_compiled_module, const std::string
     ptx_file.close();
 }
 
+/// Sets the target triple and the data layout of the module.
+static void set_triple_and_data_layout(llvm::Module& module) {
+    // // Get the default target triple for the host.
+    // auto target_triple = "nvptx64";
+    // std::string error_msg;
+    // auto* target = llvm::TargetRegistry::lookupTarget(target_triple, error_msg);
+    // if (!target)
+    //     throw std::runtime_error("Error " + error_msg + "\n");
+
+    // const auto cpu{"cuda"};
+    // const auto features{""};
+    // // Set a target machine to create the data layout.
+    // std::unique_ptr<llvm::TargetMachine> tm(
+    //     target->createTargetMachine(target_triple, cpu, features, {}, {}));
+    // if (!tm)
+    //     throw std::runtime_error("Error: could not create the target machine\n");
+
+    // Set data layout and the target triple to the module.
+    module.setDataLayout("e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n16:32:64");
+    module.setTargetTriple("nvptx64-nvidia-cuda");
+}
+
 void CUDADriver::init(const std::string& gpu, BenchmarkInfo* benchmark_info) {
     // CUDA initialization
     checkCudaErrors(cuInit(0));
@@ -104,11 +133,15 @@ void CUDADriver::init(const std::string& gpu, BenchmarkInfo* benchmark_info) {
         throw std::runtime_error("ERROR: Device 0 is not SM 2.0 or greater");
     }
 
+    set_triple_and_data_layout(*module);
+
     // Save the LLVM IR module to string
     std::string kernel_llvm_ir;
     llvm::raw_string_ostream os(kernel_llvm_ir);
     os << *module;
     os.flush();
+
+    print_ptx_to_file(kernel_llvm_ir, "kernel_before_compilation.ll");
 
     // Create NVVM program object
     checkNVVMErrors(nvvmCreateProgram(&prog));
@@ -147,7 +180,7 @@ void CUDADriver::init(const std::string& gpu, BenchmarkInfo* benchmark_info) {
 
     // Create driver context
     checkCudaErrors(cuCtxCreate(&context, 0, device));
-
+    // auto custom_compiled_ptx = load_file_to_string("kernel.ptx");
     // Create module for object
     checkCudaErrors(cuModuleLoadDataEx(&cudaModule, ptx_compiled_module.c_str(), 0, 0, 0));
 }

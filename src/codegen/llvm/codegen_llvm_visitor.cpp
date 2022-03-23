@@ -472,38 +472,38 @@ void CodegenLLVMVisitor::wrap_kernel_functions() {
     std::vector<std::string> kernel_names;
     find_kernel_names(kernel_names);
 
-    for (const auto& kernel_name: kernel_names) {
-        // Get the kernel function.
-        auto kernel = module->getFunction(kernel_name);
+    // for (const auto& kernel_name: kernel_names) {
+    //     // Get the kernel function.
+    //     auto kernel = module->getFunction(kernel_name);
 
-        // Create a wrapper void function that takes a void pointer as a single argument.
-        llvm::Type* i32_type = ir_builder.get_i32_type();
-        llvm::Type* void_ptr_type = ir_builder.get_i8_ptr_type();
-        llvm::Function* wrapper_func = llvm::Function::Create(
-            llvm::FunctionType::get(i32_type, {void_ptr_type}, /*isVarArg=*/false),
-            llvm::Function::ExternalLinkage,
-            "__" + kernel_name + "_wrapper",
-            *module);
+    //     // Create a wrapper void function that takes a void pointer as a single argument.
+    //     llvm::Type* i32_type = ir_builder.get_i32_type();
+    //     llvm::Type* void_ptr_type = ir_builder.get_i8_ptr_type();
+    //     llvm::Function* wrapper_func = llvm::Function::Create(
+    //         llvm::FunctionType::get(i32_type, {void_ptr_type}, /*isVarArg=*/false),
+    //         llvm::Function::ExternalLinkage,
+    //         "__" + kernel_name + "_wrapper",
+    //         *module);
 
-        // Optionally, add debug information for the wrapper function.
-        if (add_debug_information) {
-            debug_builder.add_function_debug_info(wrapper_func);
-        }
+    //     // Optionally, add debug information for the wrapper function.
+    //     if (add_debug_information) {
+    //         debug_builder.add_function_debug_info(wrapper_func);
+    //     }
 
-        ir_builder.create_block_and_set_insertion_point(wrapper_func);
+    //     ir_builder.create_block_and_set_insertion_point(wrapper_func);
 
-        // Proceed with bitcasting the void pointer to the struct pointer type, calling the kernel
-        // and adding a terminator.
-        llvm::Value* bitcasted = ir_builder.create_bitcast(wrapper_func->getArg(0),
-                                                           kernel->getArg(0)->getType());
-        ValueVector args;
-        args.push_back(bitcasted);
-        ir_builder.create_function_call(kernel, args, /*use_result=*/false);
+    //     // Proceed with bitcasting the void pointer to the struct pointer type, calling the kernel
+    //     // and adding a terminator.
+    //     llvm::Value* bitcasted = ir_builder.create_bitcast(wrapper_func->getArg(0),
+    //                                                        kernel->getArg(0)->getType());
+    //     ValueVector args;
+    //     args.push_back(bitcasted);
+    //     ir_builder.create_function_call(kernel, args, /*use_result=*/false);
 
-        // Create a 0 return value and a return instruction.
-        ir_builder.create_i32_constant(0);
-        ir_builder.create_return(ir_builder.pop_last_value());
-    }
+    //     // Create a 0 return value and a return instruction.
+    //     ir_builder.create_i32_constant(0);
+    //     ir_builder.create_return(ir_builder.pop_last_value());
+    // }
 }
 
 
@@ -695,7 +695,9 @@ void CodegenLLVMVisitor::visit_codegen_function(const ast::CodegenFunction& node
     // If function is a compute kernel, add a void terminator explicitly, since there is no
     // `CodegenReturnVar` node. Also, set the necessary attributes.
     if (is_kernel_function(name)) {
-        ir_builder.set_kernel_attributes();
+        if (!platform.is_gpu()) {
+            ir_builder.set_kernel_attributes();
+        }
         ir_builder.create_return();
     }
 

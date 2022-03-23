@@ -80,7 +80,7 @@ void LLVMBenchmark::run_benchmark_on_cpu(const std::shared_ptr<ast::Program>& no
             // Record the execution time of the kernel.
             std::string wrapper_name = "__" + kernel_name + "_wrapper";
             auto start = std::chrono::steady_clock::now();
-            runner.run_with_argument<int, void*>(kernel_name, instance_data.base_ptr);
+            runner.run_with_argument<int, void*>(wrapper_name, instance_data.base_ptr);
             auto end = std::chrono::steady_clock::now();
             std::chrono::duration<double> diff = end - start;
 
@@ -140,11 +140,30 @@ void LLVMBenchmark::run_benchmark_on_gpu(const std::shared_ptr<ast::Program>& no
             }
 
             // Record the execution time of the kernel.
-            std::string wrapper_name = "__" + kernel_name + "_wrapper";
             auto start = std::chrono::steady_clock::now();
+            struct test_Instance  {
+                double* __restrict__ x;
+                double* __restrict__ y;
+                double* __restrict__ m;
+                double* __restrict__ Dm;
+                double* __restrict__ v_unused;
+                double* __restrict__ g_unused;
+            };
+            for(int i = 0; i < 5; ++i) {
+                std::cout << static_cast<test_Instance*>(instance_data.base_ptr)->y[i] << std::endl;;
+            }
+            for(int i = 0; i < 5; ++i) {
+                std::cout << static_cast<test_Instance*>(instance_data.base_ptr)->m[i] << std::endl;;
+            }
             runner.run_with_argument<void*>(kernel_name,
                                             instance_data.base_ptr,
                                             gpu_execution_parameters);
+            for(int i = 0; i < 5; ++i) {
+                std::cout << static_cast<test_Instance*>(instance_data.base_ptr)->y[i] << std::endl;;
+            }
+            for(int i = 0; i < 5; ++i) {
+                std::cout << static_cast<test_Instance*>(instance_data.base_ptr)->m[i] << std::endl;;
+            }
             auto end = std::chrono::steady_clock::now();
             std::chrono::duration<double> diff = end - start;
 
