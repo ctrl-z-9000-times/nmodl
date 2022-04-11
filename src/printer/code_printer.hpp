@@ -15,6 +15,7 @@
  * \brief \copybrief nmodl::printer::CodePrinter
  */
 
+#include <fmt/format.h>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -64,13 +65,29 @@ class CodePrinter {
     /// start a block scope (i.e. start with "{")
     void start_block();
 
-    void start_block(std::string&&);
+    template <typename... Args>
+    void start_block(const std::string&& text, Args&&... args) {
+        add_indent();
+        add_text(text + "{", std::forward<Args>(args)...);
+        add_newline();
+        indent_level++;
+    }
 
-    void add_text(const std::string&);
+    template <typename... Args>
+    void add_text(const std::string&& text, Args&&... args) {
+        if (sizeof...(Args) > 0) {
+            *result << fmt::format(text, std::forward<Args>(args)...);
+        } else {
+            *result << text;
+        }
+    }
 
-    void add_line(const std::string&, int num_new_lines = 1);
-
-    void add_multi_line(const std::string&);
+    template <typename... Args>
+    void add_line(const std::string&& text, Args&&... args) {
+        add_indent();
+        add_text(text, std::forward<Args>(args)...);
+        add_newline();
+    }
 
     void add_newline(int n = 1);
 

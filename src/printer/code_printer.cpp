@@ -33,32 +33,8 @@ void CodePrinter::start_block() {
     indent_level++;
 }
 
-void CodePrinter::start_block(std::string&& text) {
-    add_indent();
-    *result << text << " {";
-    add_newline();
-    indent_level++;
-}
-
 void CodePrinter::add_indent() {
     *result << std::string(indent_level * NUM_SPACES, ' ');
-}
-
-void CodePrinter::add_text(const std::string& text) {
-    *result << text;
-}
-
-void CodePrinter::add_line(const std::string& text, int num_new_lines) {
-    add_indent();
-    *result << text;
-    add_newline(num_new_lines);
-}
-
-void CodePrinter::add_multi_line(const std::string& text) {
-    auto lines = stringutils::split_string(text, '\n');
-    for (const auto& line: lines) {
-        add_line(line);
-    }
 }
 
 void CodePrinter::add_newline(int n) {
