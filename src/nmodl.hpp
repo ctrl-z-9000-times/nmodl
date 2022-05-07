@@ -15,5 +15,3 @@
 #ifndef EIGEN_DEFAULT_DENSE_INDEX_TYPE
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE int
 #endif
-
-#include "newton/newton.hpp"

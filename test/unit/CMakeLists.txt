@@ -60,8 +60,7 @@ add_executable(
   visitor/node_index.cpp)
 add_executable(testprinter printer/printer.cpp)
 add_executable(testsymtab symtab/symbol_table.cpp)
-add_executable(testnewton newton/newton.cpp ${NEWTON_SOLVER_SOURCE_FILES})
-add_executable(testfast_math fast_math/fast_math.cpp ${NEWTON_SOLVER_SOURCE_FILES})
+add_executable(testfast_math fast_math/fast_math.cpp)
 add_executable(testunitlexer units/lexer.cpp)
 add_executable(testunitparser units/parser.cpp)
 add_executable(testcodegen codegen/main.cpp codegen/codegen_ispc.cpp codegen/codegen_helper.cpp
@@ -123,7 +122,6 @@ foreach(
   testvisitor
   testprinter
   testsymtab
-  testnewton
   testfast_math
   testunitlexer
   testunitparser)
