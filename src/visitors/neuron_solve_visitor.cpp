@@ -88,7 +88,7 @@ void NeuronSolveVisitor::visit_binary_expression(ast::BinaryExpression& node) {
                 symbol->created_from_state();
                 program_symtab->insert(symbol);
             }
-        } else {
+        } else if (solve_method.length()) {
             logger->error("NeuronSolveVisitor :: solver method '{}' not supported", solve_method);
         }
     }

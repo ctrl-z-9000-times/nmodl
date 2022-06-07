@@ -22,3 +22,6 @@
 [submodule "ext/catch2"]
 	path = ext/catch2
 	url = https://github.com/catchorg/Catch2.git
+[submodule "ext/lti_sim"]
+	path = ext/lti_sim
+	url = https://github.com/ctrl-z-9000-times/lti_sim.git

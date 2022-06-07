@@ -97,14 +97,35 @@ struct AnalyticDiffExecutor: public PythonExecutor {
 };
 
 
+struct LtiSolverExecutor: public PythonExecutor {
+    // inputs
+    std::string nmodl_filename;
+    std::string data_type;
+    std::string target;
+    std::string verbose;
+
+    // output
+    std::string impl_solver;
+    std::string call_solver;
+
+    // may also return a python exception message:
+    std::string exception_message;
+
+    // executor function
+    virtual void operator()() override;
+};
+
+
 SolveLinearSystemExecutor* create_sls_executor_func();
 SolveNonLinearSystemExecutor* create_nsls_executor_func();
 DiffeqSolverExecutor* create_des_executor_func();
 AnalyticDiffExecutor* create_ads_executor_func();
+LtiSolverExecutor* create_lti_executor_func();
 void destroy_sls_executor_func(SolveLinearSystemExecutor* exec);
 void destroy_nsls_executor_func(SolveNonLinearSystemExecutor* exec);
 void destroy_des_executor_func(DiffeqSolverExecutor* exec);
 void destroy_ads_executor_func(AnalyticDiffExecutor* exec);
+void destroy_lti_executor_func(LtiSolverExecutor* exec);
 
 void initialize_interpreter_func();
 void finalize_interpreter_func();
@@ -116,10 +137,12 @@ struct pybind_wrap_api {
     decltype(&create_nsls_executor_func) create_nsls_executor;
     decltype(&create_des_executor_func) create_des_executor;
     decltype(&create_ads_executor_func) create_ads_executor;
+    decltype(&create_lti_executor_func) create_lti_executor;
     decltype(&destroy_sls_executor_func) destroy_sls_executor;
     decltype(&destroy_nsls_executor_func) destroy_nsls_executor;
     decltype(&destroy_des_executor_func) destroy_des_executor;
     decltype(&destroy_ads_executor_func) destroy_ads_executor;
+    decltype(&destroy_lti_executor_func) destroy_lti_executor;
 };
 
 

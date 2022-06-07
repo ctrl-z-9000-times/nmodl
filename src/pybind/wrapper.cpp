@@ -153,6 +153,48 @@ void AnalyticDiffExecutor::operator()() {
     exception_message = locals["exception_message"].cast<std::string>();
 }
 
+void LtiSolverExecutor::operator()() {
+    auto locals = py::dict(
+            "nmodl_filename"_a  = nmodl_filename,
+            "data_type"_a       = data_type,
+            "target"_a          = target,
+            "verbose"_a         = verbose);
+    py::exec(R"(
+            impl_solver = ""
+            call_solver = ""
+            exception_message = ""
+            try:
+                import os, tempfile, numpy
+                from nmodl import lti_sim
+                time_step = os.environ.get("DT", None)
+                if time_step is None:
+                    raise RuntimeError('Environment variable "DT" not set!')
+                temperature = os.environ.get('CELSIUS', 37)
+                if   data_type == 'float':  float_dtype = numpy.float32
+                elif data_type == 'double': float_dtype = numpy.float64
+                outfile = tempfile.NamedTemporaryFile(delete=False, suffix='.cpp')
+                if   verbose == "trace": verbose = 2
+                elif verbose == "debug": verbose = 1
+                else:                    verbose = 0
+                _, func = lti_sim.main(nmodl_filename, None, time_step, temperature,
+                        error = 1e-4,
+                        float_dtype=float_dtype, target=target,
+                        outfile=outfile.name, verbose=verbose)
+                with open(outfile.name, 'rt') as cpp_file:
+                    impl_solver = cpp_file.read()
+                os.remove(outfile.name)
+                impl_solver = impl_solver.partition('extern "C"')[0]
+                call_solver = func._call_from_NEURON
+            except Exception as e:
+                exception_message = str(e)
+            )",
+            py::globals(),
+            locals);
+    impl_solver = locals["impl_solver"].cast<std::string>();
+    call_solver = locals["call_solver"].cast<std::string>();
+    exception_message = locals["exception_message"].cast<std::string>();
+}
+
 SolveLinearSystemExecutor* create_sls_executor_func() {
     return new SolveLinearSystemExecutor();
 }
@@ -169,6 +211,10 @@ AnalyticDiffExecutor* create_ads_executor_func() {
     return new AnalyticDiffExecutor();
 }
 
+LtiSolverExecutor* create_lti_executor_func() {
+    return new LtiSolverExecutor();
+}
+
 void destroy_sls_executor_func(SolveLinearSystemExecutor* exec) {
     delete exec;
 }
@@ -182,6 +228,10 @@ void destroy_des_executor_func(DiffeqSolverExecutor* exec) {
 }
 
 void destroy_ads_executor_func(AnalyticDiffExecutor* exec) {
+    delete exec;
+}
+
+void destroy_lti_executor_func(LtiSolverExecutor* exec) {
     delete exec;
 }
 
@@ -206,10 +256,12 @@ pybind_wrap_api init_pybind_wrap_api() noexcept {
         &nmodl::pybind_wrappers::create_nsls_executor_func,
         &nmodl::pybind_wrappers::create_des_executor_func,
         &nmodl::pybind_wrappers::create_ads_executor_func,
+        &nmodl::pybind_wrappers::create_lti_executor_func,
         &nmodl::pybind_wrappers::destroy_sls_executor_func,
         &nmodl::pybind_wrappers::destroy_nsls_executor_func,
         &nmodl::pybind_wrappers::destroy_des_executor_func,
         &nmodl::pybind_wrappers::destroy_ads_executor_func,
+        &nmodl::pybind_wrappers::destroy_lti_executor_func,
     };
 }
 

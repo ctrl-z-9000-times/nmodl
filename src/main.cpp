@@ -35,6 +35,7 @@
 #include "visitors/local_var_rename_visitor.hpp"
 #include "visitors/localize_visitor.hpp"
 #include "visitors/loop_unroll_visitor.hpp"
+#include "visitors/lti_solver_visitor.hpp"
 #include "visitors/neuron_solve_visitor.hpp"
 #include "visitors/nmodl_visitor.hpp"
 #include "visitors/perf_visitor.hpp"
@@ -450,6 +451,19 @@ int main(int argc, const char* argv[]) {
                                 "blocks. Use it only for debugging/developing",
                                 filename));
             }
+        }
+
+        if (lti_solver_exists(*ast)) {
+            logger->info("Running lti solve visitor");
+            std::string target;
+            if      (c_backend)    target = "host";
+            else if (cuda_backend) target = "cuda";
+            else {
+                logger->error("Lti solver does not support codegen backend.");
+                return 1;
+            }
+            LtiSolverVisitor(file, data_type, target, verbose).visit_program(*ast);
+            ast_to_nmodl(*ast, filepath("lti_solve"));
         }
 
         {

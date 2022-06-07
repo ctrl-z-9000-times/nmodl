@@ -35,6 +35,9 @@ static constexpr char AFTER_CVODE_METHOD[] = "after_cvode";
 /// sparse method in nmodl
 static constexpr char SPARSE_METHOD[] = "sparse";
 
+/// lti method in nmodl
+static constexpr char LTI_METHOD[] = "lti";
+
 /// net_event function call in nmodl
 static constexpr char NET_EVENT_METHOD[] = "net_event";
 

@@ -170,6 +170,7 @@ const static std::map<std::string, MethodInfo> methods = {{"adams", MethodInfo(D
                                                           {"seidel", MethodInfo(LINF, 0)},
                                                           {"_advance", MethodInfo(KINF, 0)},
                                                           {"sparse", MethodInfo(KINF, 0)},
+                                                          {"lti", MethodInfo(KINF, 0)},
                                                           {"derivimplicit", MethodInfo(DERF, 0)},
                                                           {"cnexp", MethodInfo(DERF, 0)},
                                                           {"clsoda", MethodInfo(DERF | KINF, 1)},

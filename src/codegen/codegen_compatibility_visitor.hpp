@@ -55,6 +55,7 @@ class CodegenCompatibilityVisitor: public visitor::AstVisitor {
                                                 codegen::naming::EULER_METHOD,
                                                 codegen::naming::DERIVIMPLICIT_METHOD,
                                                 codegen::naming::SPARSE_METHOD,
+                                                codegen::naming::LTI_METHOD,
                                                 codegen::naming::AFTER_CVODE_METHOD};
 
     /// Vector that stores all the ast::Node that are unhandled
