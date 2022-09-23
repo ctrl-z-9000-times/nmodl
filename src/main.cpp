@@ -16,7 +16,7 @@
 #include "codegen/codegen_compatibility_visitor.hpp"
 #include "codegen/codegen_cuda_visitor.hpp"
 #include "codegen/codegen_ispc_visitor.hpp"
-#include "codegen/codegen_omp_visitor.hpp"
+#include "codegen/codegen_transform_visitor.hpp"
 #include "config/config.h"
 #include "parser/nmodl_driver.hpp"
 #include "pybind/pyembed.hpp"
@@ -26,6 +26,7 @@
 #include "visitors/ast_visitor.hpp"
 #include "visitors/constant_folder_visitor.hpp"
 #include "visitors/global_var_visitor.hpp"
+#include "visitors/implicit_argument_visitor.hpp"
 #include "visitors/indexedname_visitor.hpp"
 #include "visitors/inline_visitor.hpp"
 #include "visitors/ispc_rename_visitor.hpp"
@@ -59,6 +60,7 @@ using namespace codegen;
 using namespace visitor;
 using nmodl::parser::NmodlDriver;
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main(int argc, const char* argv[]) {
     CLI::App app{fmt::format("NMODL : Source-to-Source Code Generation Framework [{}]",
                              Version::to_string())};
@@ -71,9 +73,6 @@ int main(int argc, const char* argv[]) {
 
     /// true if serial c code to be generated
     bool c_backend(true);
-
-    /// true if c code with openmp to be generated
-    bool omp_backend(false);
 
     /// true if ispc code to be generated
     bool ispc_backend(false);
@@ -160,6 +159,7 @@ int main(int argc, const char* argv[]) {
     /// floating point data type
     std::string data_type("double");
 
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
     app.get_formatter()->column_width(40);
     app.set_help_all_flag("-H,--help-all", "Print this help message including all sub-commands");
 
@@ -185,9 +185,6 @@ int main(int argc, const char* argv[]) {
 
     auto host_opt = app.add_subcommand("host", "HOST/CPU code backends")->ignore_case();
     host_opt->add_flag("--c", c_backend, fmt::format("C/C++ backend ({})", c_backend))
-        ->ignore_case();
-    host_opt
-        ->add_flag("--omp", omp_backend, fmt::format("C/C++ backend with OpenMP ({})", omp_backend))
         ->ignore_case();
     host_opt
         ->add_flag("--ispc",
@@ -285,7 +282,7 @@ int main(int argc, const char* argv[]) {
     CLI11_PARSE(app, argc, argv);
 
     // if any of the other backends is used we force the C backend to be off.
-    if (omp_backend || ispc_backend) {
+    if (ispc_backend) {
         c_backend = false;
     }
 
@@ -333,18 +330,18 @@ int main(int argc, const char* argv[]) {
         /// just visit the ast
         AstVisitor().visit_program(*ast);
 
+        /// construct symbol table
+        {
+            logger->info("Running symtab visitor");
+            SymtabVisitor(update_symtab).visit_program(*ast);
+        }
+
         /// Check some rules that ast should follow
         {
             logger->info("Running semantic analysis visitor");
             if (SemanticAnalysisVisitor().check(*ast)) {
                 return 1;
             }
-        }
-
-        /// construct symbol table
-        {
-            logger->info("Running symtab visitor");
-            SymtabVisitor(update_symtab).visit_program(*ast);
         }
 
         /// use cnexp instead of after_cvode solve method
@@ -410,7 +407,10 @@ int main(int argc, const char* argv[]) {
         ast_to_nmodl(*ast, filepath("ast"));
 
         if (json_ast) {
-            auto file = scratch_dir + "/" + modfile + ".ast.json";
+            std::string file{scratch_dir};
+            file += "/";
+            file += modfile;
+            file += ".ast.json";
             logger->info("Writing AST into {}", file);
             JSONVisitor(file).write(*ast);
         }
@@ -537,15 +537,29 @@ int main(int argc, const char* argv[]) {
         }
 
         if (json_perfstat) {
-            auto file = scratch_dir + "/" + modfile + ".perf.json";
+            std::string file{scratch_dir};
+            file.append("/");
+            file.append(modfile);
+            file.append(".perf.json");
             logger->info("Writing performance statistics to {}", file);
             PerfVisitor(file).visit_program(*ast);
         }
+
+        // Add implicit arguments (like celsius, nt) to NEURON functions (like
+        // nrn_ghk, at_time) whose signatures we have to massage.
+        ImplicitArgumentVisitor{}.visit_program(*ast);
+        SymtabVisitor(update_symtab).visit_program(*ast);
 
         {
             // make sure to run perf visitor because code generator
             // looks for read/write counts const/non-const declaration
             PerfVisitor().visit_program(*ast);
+        }
+
+        {
+            CodegenTransformVisitor{}.visit_program(*ast);
+            ast_to_nmodl(*ast, filepath("TransformVisitor"));
+            SymtabVisitor(update_symtab).visit_program(*ast);
         }
 
         {
@@ -561,15 +575,6 @@ int main(int argc, const char* argv[]) {
             else if (oacc_backend) {
                 logger->info("Running OpenACC backend code generator");
                 CodegenAccVisitor visitor(modfile,
-                                          output_dir,
-                                          data_type,
-                                          optimize_ionvar_copies_codegen);
-                visitor.visit_program(*ast);
-            }
-
-            else if (omp_backend) {
-                logger->info("Running OpenMP backend code generator");
-                CodegenOmpVisitor visitor(modfile,
                                           output_dir,
                                           data_type,
                                           optimize_ionvar_copies_codegen);

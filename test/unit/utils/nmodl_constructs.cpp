@@ -60,7 +60,7 @@ namespace test_utils {
  * provided with the expected nmodl.
  */
 
-std::map<std::string, NmodlTestCase> nmodl_invalid_constructs{
+std::map<std::string, NmodlTestCase> const nmodl_invalid_constructs{
     // clang-format off
     {
         "title_1",
@@ -186,7 +186,7 @@ std::map<std::string, NmodlTestCase> nmodl_invalid_constructs{
     // clang-format on
 };
 
-std::map<std::string, NmodlTestCase> nmodl_valid_constructs{
+std::map<std::string, NmodlTestCase> const nmodl_valid_constructs{
     // clang-format off
     {
         "title_1",
@@ -1017,19 +1017,6 @@ std::map<std::string, NmodlTestCase> nmodl_valid_constructs{
     },
 
     {
-        "queue_statement_1",
-        {
-            "PUTQ and GETQ statement",
-            R"(
-                PROCEDURE lates() {
-                    PUTQ one_name
-                    GETQ another_name
-                }
-            )"
-        }
-    },
-
-    {
         "reset_statement_1",
         {
             "RESET statement",
@@ -1480,7 +1467,7 @@ std::map<std::string, NmodlTestCase> nmodl_valid_constructs{
 };
 
 
-std::vector<DiffEqTestCase> diff_eq_constructs{
+std::vector<DiffEqTestCase> const diff_eq_constructs{
     // clang-format off
 
         /// differential equations from BlueBrain mod files including latest V6 branch

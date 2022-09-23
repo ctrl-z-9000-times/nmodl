@@ -4,13 +4,13 @@
 add_library(
   codegen STATIC
   codegen_acc_visitor.cpp
+  codegen_transform_visitor.cpp
   codegen_c_visitor.cpp
   codegen_compatibility_visitor.cpp
   codegen_cuda_visitor.cpp
   codegen_helper_visitor.cpp
   codegen_info.cpp
   codegen_ispc_visitor.cpp
-  codegen_omp_visitor.cpp
   codegen_utils.cpp)
 add_dependencies(codegen lexer util visitor)
 target_link_libraries(codegen PRIVATE util)

@@ -12,7 +12,15 @@
 #include "codegen/codegen_helper_visitor.hpp"
 #include "parser/nmodl_driver.hpp"
 #include "test/unit/utils/test_utils.hpp"
+#include "visitors/implicit_argument_visitor.hpp"
+#include "visitors/inline_visitor.hpp"
+#include "visitors/neuron_solve_visitor.hpp"
+#include "visitors/perf_visitor.hpp"
+#include "visitors/solve_block_visitor.hpp"
+#include "visitors/sympy_solver_visitor.hpp"
 #include "visitors/symtab_visitor.hpp"
+
+using Catch::Matchers::Contains;  // ContainsSubstring in newer Catch2
 
 using namespace nmodl;
 using namespace visitor;
@@ -23,10 +31,15 @@ using nmodl::test_utils::reindent_text;
 
 /// Helper for creating C codegen visitor
 std::shared_ptr<CodegenCVisitor> create_c_visitor(const std::shared_ptr<ast::Program>& ast,
-                                                  const std::string& text,
+                                                  const std::string& /* text */,
                                                   std::stringstream& ss) {
     /// construct symbol table
     SymtabVisitor().visit_program(*ast);
+
+    /// run all necessary pass
+    InlineVisitor().visit_program(*ast);
+    NeuronSolveVisitor().visit_program(*ast);
+    SolveBlockVisitor().visit_program(*ast);
 
     /// create C code generation visitor
     auto cv = std::make_shared<CodegenCVisitor>("temp.mod", ss, "double", false);
@@ -40,6 +53,15 @@ std::string get_instance_var_setup_function(std::string& nmodl_text) {
     std::stringstream ss;
     auto cvisitor = create_c_visitor(ast, nmodl_text, ss);
     cvisitor->print_instance_variable_setup();
+    return reindent_text(ss.str());
+}
+
+/// print entire code
+std::string get_cpp_code(const std::string& nmodl_text) {
+    const auto& ast = NmodlDriver().parse_string(nmodl_text);
+    std::stringstream ss;
+    auto cvisitor = create_c_visitor(ast, nmodl_text, ss);
+    cvisitor->visit_program(*ast);
     return reindent_text(ss.str());
 }
 
@@ -74,8 +96,13 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
 
         THEN("ionic current variable declared as RANGE appears first") {
             std::string generated_code = R"(
-                static inline void setup_instance(NrnThread* nt, Memb_list* ml)  {
-                    cal_Instance* inst = (cal_Instance*) mem_alloc(1, sizeof(cal_Instance));
+                static inline void setup_instance(NrnThread* nt, Memb_list* ml) {
+                    auto* const inst = static_cast<cal_Instance*>(ml->instance);
+                    assert(inst);
+                    assert(inst->global);
+                    assert(inst->global == &cal_global);
+                    assert(inst->global == ml->global_variables);
+                    assert(ml->global_variables_size == sizeof(cal_Store));
                     int pnodecount = ml->_nodecount_padded;
                     Datum* indexes = ml->pdata;
                     inst->gcalbar = ml->data+0*pnodecount;
@@ -93,12 +120,11 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
                     inst->ion_cao = nt->_data;
                     inst->ion_ica = nt->_data;
                     inst->ion_dicadv = nt->_data;
-                    ml->instance = inst;
                 }
             )";
-            auto expected = reindent_text(generated_code);
-            auto result = get_instance_var_setup_function(nmodl_text);
-            REQUIRE(result.find(expected) != std::string::npos);
+            auto const expected = reindent_text(generated_code);
+            auto const result = get_instance_var_setup_function(nmodl_text);
+            REQUIRE_THAT(result, Contains(expected));
         }
     }
 
@@ -126,8 +152,13 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
 
         THEN("Ion variables are defined in the order of USEION") {
             std::string generated_code = R"(
-                static inline void setup_instance(NrnThread* nt, Memb_list* ml)  {
-                    lca_Instance* inst = (lca_Instance*) mem_alloc(1, sizeof(lca_Instance));
+                static inline void setup_instance(NrnThread* nt, Memb_list* ml) {
+                    auto* const inst = static_cast<lca_Instance*>(ml->instance);
+                    assert(inst);
+                    assert(inst->global);
+                    assert(inst->global == &lca_global);
+                    assert(inst->global == ml->global_variables);
+                    assert(ml->global_variables_size == sizeof(lca_Store));
                     int pnodecount = ml->_nodecount_padded;
                     Datum* indexes = ml->pdata;
                     inst->m = ml->data+0*pnodecount;
@@ -137,26 +168,28 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
                     inst->v_unused = ml->data+4*pnodecount;
                     inst->ion_cai = nt->_data;
                     inst->ion_cao = nt->_data;
-                    ml->instance = inst;
                 }
             )";
 
-            auto expected = reindent_text(generated_code);
-            auto result = get_instance_var_setup_function(nmodl_text);
-            REQUIRE(result.find(expected) != std::string::npos);
+            auto const expected = reindent_text(generated_code);
+            auto const result = get_instance_var_setup_function(nmodl_text);
+            REQUIRE_THAT(result, Contains(expected));
         }
     }
 
     // In the below mod file, ion variables ncai and lcai are declared
     // as state variables as well as range variables. The issue about
     // this mod file ordering was fixed in #443.
+    // We also use example from #888 where mod file declared `g` as a
+    // conductance variable in a non-threadsafe mod file and resulting
+    // into duplicate definition of `g` in the instance structure.
     GIVEN("ccanl.mod: mod file from reduced_dentate model") {
         std::string nmodl_text = R"(
             NEURON {
               SUFFIX ccanl
               USEION nca READ ncai, inca, enca WRITE enca, ncai VALENCE 2
               USEION lca READ lcai, ilca, elca WRITE elca, lcai VALENCE 2
-              RANGE caiinf, catau, cai, ncai, lcai, eca, elca, enca
+              RANGE caiinf, catau, cai, ncai, lcai, eca, elca, enca, g
             }
             UNITS {
               FARADAY = 96520(coul)
@@ -177,33 +210,41 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
               enca(mV)
               elca(mV)
               eca(mV)
+              g(S/cm2)
             }
             STATE {
               ncai(mM)
               lcai(mM)
             }
+            BREAKPOINT {}
+            DISCRETE seq {}
         )";
 
         THEN("Ion variables are defined in the order of USEION") {
             std::string generated_code = R"(
-                static inline void setup_instance(NrnThread* nt, Memb_list* ml)  {
-                    ccanl_Instance* inst = (ccanl_Instance*) mem_alloc(1, sizeof(ccanl_Instance));
+                static inline void setup_instance(NrnThread* nt, Memb_list* ml) {
+                    auto* const inst = static_cast<ccanl_Instance*>(ml->instance);
+                    assert(inst);
+                    assert(inst->global);
+                    assert(inst->global == &ccanl_global);
+                    assert(inst->global == ml->global_variables);
+                    assert(ml->global_variables_size == sizeof(ccanl_Store));
                     int pnodecount = ml->_nodecount_padded;
                     Datum* indexes = ml->pdata;
                     inst->catau = ml->data+0*pnodecount;
                     inst->caiinf = ml->data+1*pnodecount;
                     inst->cai = ml->data+2*pnodecount;
                     inst->eca = ml->data+3*pnodecount;
-                    inst->ica = ml->data+4*pnodecount;
-                    inst->inca = ml->data+5*pnodecount;
-                    inst->ilca = ml->data+6*pnodecount;
-                    inst->enca = ml->data+7*pnodecount;
-                    inst->elca = ml->data+8*pnodecount;
-                    inst->ncai = ml->data+9*pnodecount;
-                    inst->Dncai = ml->data+10*pnodecount;
-                    inst->lcai = ml->data+11*pnodecount;
-                    inst->Dlcai = ml->data+12*pnodecount;
-                    inst->v_unused = ml->data+13*pnodecount;
+                    inst->g = ml->data+4*pnodecount;
+                    inst->ica = ml->data+5*pnodecount;
+                    inst->inca = ml->data+6*pnodecount;
+                    inst->ilca = ml->data+7*pnodecount;
+                    inst->enca = ml->data+8*pnodecount;
+                    inst->elca = ml->data+9*pnodecount;
+                    inst->ncai = ml->data+10*pnodecount;
+                    inst->Dncai = ml->data+11*pnodecount;
+                    inst->lcai = ml->data+12*pnodecount;
+                    inst->Dlcai = ml->data+13*pnodecount;
                     inst->ion_ncai = nt->_data;
                     inst->ion_inca = nt->_data;
                     inst->ion_enca = nt->_data;
@@ -212,15 +253,32 @@ SCENARIO("Check instance variable definition order", "[codegen][var_order]") {
                     inst->ion_ilca = nt->_data;
                     inst->ion_elca = nt->_data;
                     inst->style_lca = ml->pdata;
-                    ml->instance = inst;
                 }
             )";
 
-            auto expected = reindent_text(generated_code);
-            auto result = get_instance_var_setup_function(nmodl_text);
-            REQUIRE(result.find(expected) != std::string::npos);
+            auto const expected = reindent_text(generated_code);
+            auto const result = get_instance_var_setup_function(nmodl_text);
+            REQUIRE_THAT(result, Contains(expected));
         }
     }
+}
+
+std::string get_instance_structure(std::string nmodl_text) {
+    // parse mod file & print mechanism structure
+    auto const ast = NmodlDriver{}.parse_string(nmodl_text);
+    // add implicit arguments
+    ImplicitArgumentVisitor{}.visit_program(*ast);
+    // update the symbol table for PerfVisitor
+    SymtabVisitor{}.visit_program(*ast);
+    // we need the read/write counts so the codegen knows whether or not
+    // global variables are used
+    PerfVisitor{}.visit_program(*ast);
+    // setup codegen
+    std::stringstream ss{};
+    CodegenCVisitor cv{"temp.mod", ss, "double", false};
+    cv.setup(*ast);
+    cv.print_mechanism_range_var_structure(true);
+    return ss.str();
 }
 
 SCENARIO("Check parameter constness with VERBATIM block",
@@ -247,23 +305,121 @@ SCENARIO("Check parameter constness with VERBATIM block",
         )";
 
         THEN("Variable used in VERBATIM shouldn't be marked as const") {
-            std::stringstream ss;
-
-            /// parse mod file & print mechanism structure
-            const auto& ast = NmodlDriver().parse_string(nmodl_text);
-            auto cvisitor = create_c_visitor(ast, nmodl_text, ss);
-            cvisitor->print_mechanism_range_var_structure();
-
+            auto const generated = get_instance_structure(nmodl_text);
             std::string expected_code = R"(
-                /** all mechanism instance variables */
+                /** all mechanism instance variables and global variables */
                 struct IntervalFire_Instance  {
-                    double* __restrict__ invl;
-                    const double* __restrict__ burst_start;
-                    double* __restrict__ v_unused;
+                    double* __restrict__ invl{};
+                    const double* __restrict__ burst_start{};
+                    double* __restrict__ v_unused{};
+                    IntervalFire_Store* global{&IntervalFire_global};
                 };
             )";
+            REQUIRE(reindent_text(generated) == reindent_text(expected_code));
+        }
+    }
+}
 
-            REQUIRE(reindent_text(ss.str()) == reindent_text(expected_code));
+SCENARIO("Check NEURON globals are added to the instance struct on demand",
+         "[codegen][global_variables]") {
+    GIVEN("A MOD file that uses global variables") {
+        std::string const nmodl_text = R"(
+            NEURON {
+                SUFFIX GlobalTest
+                RANGE temperature
+            }
+            INITIAL {
+                temperature = celsius + secondorder + pi
+            }
+        )";
+        THEN("The instance struct should contain these variables") {
+            auto const generated = get_instance_structure(nmodl_text);
+            REQUIRE_THAT(generated, Contains("double* __restrict__ celsius{&coreneuron::celsius}"));
+            REQUIRE_THAT(generated, Contains("double* __restrict__ pi{&coreneuron::pi}"));
+            REQUIRE_THAT(generated,
+                         Contains("int* __restrict__ secondorder{&coreneuron::secondorder}"));
+        }
+    }
+    GIVEN("A MOD file that implicitly uses global variables") {
+        std::string const nmodl_text = R"(
+            NEURON {
+                SUFFIX ImplicitTest
+            }
+            INITIAL {
+                LOCAL x
+                x = nrn_ghk(1, 2, 3, 4)
+            }
+        )";
+        THEN("The instance struct should contain celsius for the implicit 5th argument") {
+            auto const generated = get_instance_structure(nmodl_text);
+            REQUIRE_THAT(generated, Contains("celsius"));
+        }
+    }
+    GIVEN("A MOD file that does not touch celsius, secondorder or pi") {
+        std::string const nmodl_text = R"(
+            NEURON {
+                SUFFIX GlobalTest
+            }
+        )";
+        THEN("The instance struct should not contain those variables") {
+            auto const generated = get_instance_structure(nmodl_text);
+            REQUIRE_THAT(generated, !Contains("celsius"));
+            REQUIRE_THAT(generated, !Contains("pi"));
+            REQUIRE_THAT(generated, !Contains("secondorder"));
+        }
+    }
+}
+
+SCENARIO("Check code generation for TABLE statements", "[codegen][array_variables]") {
+    GIVEN("A MOD file that uses global and array variables in TABLE") {
+        std::string const nmodl_text = R"(
+            NEURON {
+                SUFFIX glia_Cav2_3
+                RANGE inf
+                GLOBAL tau
+            }
+
+            STATE { m }
+
+            PARAMETER {
+                tau = 1
+            }
+
+            ASSIGNED {
+                inf[2]
+            }
+
+            BREAKPOINT {
+                 SOLVE states METHOD cnexp
+            }
+
+            DERIVATIVE states {
+                mhn(v)
+                m' =  (inf[0] - m)/tau
+            }
+
+            PROCEDURE mhn(v (mV)) {
+                TABLE inf, tau DEPEND celsius FROM -100 TO 100 WITH 200
+                FROM i=0 TO 1 {
+                    inf[i] = v + tau
+                }
+            }
+        )";
+        THEN("Array and global variables should be correctly generated") {
+            auto const generated = get_cpp_code(nmodl_text);
+            REQUIRE_THAT(generated, Contains("double t_inf[2][201]{};"));
+            REQUIRE_THAT(generated, Contains("double t_tau[201]{};"));
+
+            REQUIRE_THAT(generated, Contains("inst->global->t_inf[0][i] = (inst->inf+id*2)[0];"));
+            REQUIRE_THAT(generated, Contains("inst->global->t_inf[1][i] = (inst->inf+id*2)[1];"));
+            REQUIRE_THAT(generated, Contains("inst->global->t_tau[i] = inst->global->tau;"));
+
+            REQUIRE_THAT(generated,
+                         Contains("(inst->inf+id*2)[0] = inst->global->t_inf[0][index];"));
+
+            REQUIRE_THAT(generated, Contains("(inst->inf+id*2)[0] = inst->global->t_inf[0][i]"));
+            REQUIRE_THAT(generated, Contains("(inst->inf+id*2)[1] = inst->global->t_inf[1][i]"));
+            REQUIRE_THAT(generated, Contains("inst->global->tau = inst->global->t_tau[i]"));
         }
     }
 }

@@ -96,7 +96,8 @@ SymbolType prime_symbol(std::string text, PositionType& pos) {
     stringutils::remove_character(text, '\'');
 
     auto prime_name = new ast::String(text);
-    auto prime_order = new ast::Integer(order, nullptr);
+    assert(order <= std::numeric_limits<int>::max());
+    auto prime_order = new ast::Integer(static_cast<int>(order), nullptr);
     ast::PrimeName value(prime_name, prime_order);
     value.set_token(token);
     return Parser::make_PRIME(value, pos);
@@ -194,8 +195,6 @@ SymbolType token_symbol(const std::string& key, PositionType& pos, TokenType typ
         return Parser::make_FUNCTION1(token, pos);
     case Token::FUNCTION_TABLE:
         return Parser::make_FUNCTION_TABLE(token, pos);
-    case Token::GETQ:
-        return Parser::make_GETQ(token, pos);
     case Token::GLOBAL:
         return Parser::make_GLOBAL(token, pos);
     case Token::IF:
@@ -250,8 +249,6 @@ SymbolType token_symbol(const std::string& key, PositionType& pos, TokenType typ
         return Parser::make_PROCEDURE(token, pos);
     case Token::PROTECT:
         return Parser::make_PROTECT(token, pos);
-    case Token::PUTQ:
-        return Parser::make_PUTQ(token, pos);
     case Token::RANGE:
         return Parser::make_RANGE(token, pos);
     case Token::READ:
